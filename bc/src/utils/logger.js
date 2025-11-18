@@ -1,89 +1,122 @@
 /**
- * Logging Utility
- * Centralized logging with levels
+ * Unified Logger using Winston
+ * Replaces logger.js, scraper-logger.js, and log-formatter.js
  */
 
-const fs = require('fs').promises;
-const fsSync = require('fs');
+const winston = require('winston');
+const chalk = require('chalk');
 const path = require('path');
 
-class Logger {
-    constructor(logFile = 'scraper-errors.log') {
-        this.logFile = logFile;
-        this.enableLogging = true;
-        this.writeQueue = [];
-        this.isWriting = false;
-    }
-    
-    async _write(level, message, context = {}) {
-        if (!this.enableLogging) return;
-        
-        const timestamp = new Date().toISOString();
-        const contextStr = Object.keys(context).length > 0 
-            ? JSON.stringify(context) 
-            : '';
-        
-        const logEntry = `[${timestamp}] [${level}] ${message} ${contextStr}\n`;
-        
-        // Add to queue for async writing
-        this.writeQueue.push(logEntry);
-        
-        // Process queue if not already writing
-        if (!this.isWriting) {
-            this._processQueue();
+// Define log format
+const logFormat = winston.format.combine(
+    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+    winston.format.errors({ stack: true }),
+    winston.format.splat(),
+    winston.format.json()
+);
+
+// Console format with colors
+const consoleFormat = winston.format.combine(
+    winston.format.colorize(),
+    winston.format.printf(({ level, message, timestamp, ...metadata }) => {
+        let msg = `${timestamp} [${level}] ${message}`;
+        if (Object.keys(metadata).length > 0) {
+            msg += ` ${JSON.stringify(metadata)}`;
         }
-    }
+        return msg;
+    })
+);
+
+// Create Winston logger
+const winstonLogger = winston.createLogger({
+    level: process.env.LOG_LEVEL || 'info',
+    format: logFormat,
+    transports: [
+        // Console output
+        new winston.transports.Console({
+            format: consoleFormat
+        }),
+        // Error log file
+        new winston.transports.File({ 
+            filename: 'logs/error.log', 
+            level: 'error',
+            maxsize: 5242880, // 5MB
+            maxFiles: 5
+        }),
+        // Combined log file
+        new winston.transports.File({ 
+            filename: 'logs/combined.log',
+            maxsize: 5242880, // 5MB
+            maxFiles: 5
+        })
+    ],
+    exitOnError: false
+});
+
+// Progress tracking state
+let lastProgressMessage = '';
+let progressTimeout = null;
+
+// Enhanced logger with additional methods
+const logger = {
+    info: (message, context) => winstonLogger.info(message, context),
+    error: (message, context) => winstonLogger.error(message, context),
+    warn: (message, context) => winstonLogger.warn(message, context),
+    debug: (message, context) => winstonLogger.debug(message, context),
     
-    async _processQueue() {
-        if (this.writeQueue.length === 0) {
-            this.isWriting = false;
+    // Success method (maps to info with success icon)
+    success: (message, context) => {
+        console.log(chalk.green('✅ ') + message + (context ? ' ' + JSON.stringify(context) : ''));
+        winstonLogger.info(message, { ...context, level: 'success' });
+    },
+    
+    // Progress method for overwriting console lines
+    progress: (message) => {
+        if (progressTimeout) {
+            clearTimeout(progressTimeout);
+        }
+        
+        if (!message) {
+            if (lastProgressMessage) {
+                process.stdout.write('\r' + ' '.repeat(lastProgressMessage.length) + '\r');
+                lastProgressMessage = '';
+            }
             return;
         }
         
-        this.isWriting = true;
-        const entries = this.writeQueue.splice(0, this.writeQueue.length);
-        const content = entries.join('');
+        process.stdout.write('\r' + message);
+        lastProgressMessage = message;
         
-        try {
-            await fs.appendFile(this.logFile, content);
-        } catch (err) {
-            console.error('Failed to write to log file:', err.message);
+        // Auto-clear after 5 seconds of inactivity
+        progressTimeout = setTimeout(() => {
+            logger.clearProgress();
+        }, 5000);
+    },
+    
+    // Clear progress line
+    clearProgress: () => {
+        if (lastProgressMessage) {
+            process.stdout.write('\r' + ' '.repeat(lastProgressMessage.length) + '\r');
+            lastProgressMessage = '';
         }
-        
-        // Process remaining queue
-        setImmediate(() => this._processQueue());
-    }
+        if (progressTimeout) {
+            clearTimeout(progressTimeout);
+            progressTimeout = null;
+        }
+    },
     
-    error(message, context) {
-        console.error(`❌ ${message}`, context || '');
-        this._write('ERROR', message, context);
-    }
+    // Legacy methods for compatibility
+    setLogFile: (filename) => {
+        // Winston handles this automatically
+    },
     
-    warn(message, context) {
-        console.warn(`⚠️  ${message}`, context || '');
-        this._write('WARN', message, context);
-    }
-    
-    info(message, context) {
-        console.log(`ℹ️  ${message}`, context || '');
-        this._write('INFO', message, context);
-    }
-    
-    debug(message, context) {
-        if (process.env.DEBUG) {
-            console.log(`🔍 ${message}`, context || '');
-            this._write('DEBUG', message, context);
+    setEnabled: (enabled) => {
+        if (!enabled) {
+            winstonLogger.transports.forEach(t => t.silent = true);
+        } else {
+            winstonLogger.transports.forEach(t => t.silent = false);
         }
     }
-    
-    setLogFile(filename) {
-        this.logFile = filename;
-    }
-    
-    setEnabled(enabled) {
-        this.enableLogging = enabled;
-    }
-}
+};
 
-// Export singleton instance
-module.exports = new Logger();
+module.exports = logger;

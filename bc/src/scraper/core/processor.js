@@ -5,7 +5,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const logger = require('../../utils/scraper-logger');
+const logger = require('../../utils/logger');
 const { CONFIG, BROWSER_CONFIG } = require('../config/config-loader');
 const { launchChromium } = require('../browser/launcher');
 const { clearBrowserData, clearEverything, closeBlankTabsExcept } = require('../browser/cleaner');
@@ -15,7 +15,6 @@ const { extractPlaceLinks, extractPlaceLinksStreaming } = require('./link-extrac
 const { scrapePlace, scrapePlaceInTab } = require('./data-scraper');
 const { saveToJSON } = require('../utils/file-operations');
 const { retryOperation } = require('../utils/helpers');
-const { progressManager } = require('../utils/progress-manager');
 const { captchaDetector } = require('../utils/captcha-detector');
 
 // Global state for all results (used by API)
@@ -100,11 +99,8 @@ async function processKeywords(keywords, customWorkers = null, customLinkWorkers
         fs.mkdirSync(CONFIG.outputDir, { recursive: true });
     }
     
-    // Load previous progress
-    const progress = progressManager.loadProgress();
-    const completedSet = new Set(progress.completedKeywords || []);
-    
     // Store all results to return
+    const completedSet = new Set();
     const allResults = {};
     const totalKeywords = keywords.length;
     const reportedKeywords = new Set();
@@ -694,15 +690,10 @@ async function processKeywords(keywords, customWorkers = null, customLinkWorkers
                             console.log(`\n   💾 Saved ${keywordResults.length} places for "${kw}"`);
                         }
                         
-                        // Save progress for each keyword
+                        // Track completion
                         completedSet.add(kw);
                         triggerKeywordComplete(kw, keywordResults.length, null, keywordResults);  // ✅ Pass results
                     }
-                    
-                    progressManager.saveProgress({
-                        completedKeywords: Array.from(completedSet),
-                        lastUpdated: new Date().toISOString()
-                    });
                 } else {
                     // Sequential extraction: single keyword
                     allResults[keyword] = finalResults;
@@ -712,12 +703,8 @@ async function processKeywords(keywords, customWorkers = null, customLinkWorkers
                         saveToJSON(finalResults, keyword, CONFIG.outputDir, true);
                     }
                     
-                    // Save progress
+                    // Track completion
                     completedSet.add(keyword);
-                    progressManager.saveProgress({
-                        completedKeywords: Array.from(completedSet),
-                        lastUpdated: new Date().toISOString()
-                    });
 
                     triggerKeywordComplete(keyword, finalResults.length, null, finalResults);  // ✅ Pass results
                 }
@@ -811,12 +798,7 @@ async function processKeywords(keywords, customWorkers = null, customLinkWorkers
     console.log(`📁 Results: ${CONFIG.outputDir}`);
     console.log(`🛡️  CAPTCHA Detections: ${captchaDetector.getCount()}`);
     
-    // Clear progress file on successful completion
-    progressManager.clearProgress();
     console.log(`\n✅ All keywords completed successfully!`);
-    if (CONFIG.enableErrorLogging && fs.existsSync(progressManager.errorLogFile)) {
-        console.log(`⚠️  Check ${progressManager.errorLogFile} for any errors`);
-    }
     
     // Return results for API server
     return allResults;

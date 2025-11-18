@@ -5,7 +5,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const logger = require('../../utils/scraper-logger');
+const logger = require('../../utils/logger');
 const CONSTANTS = require('../../utils/constants');
 
 /**

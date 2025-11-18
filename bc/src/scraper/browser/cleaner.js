@@ -2,7 +2,7 @@
  * Browser data cleaning utilities
  */
 
-const logger = require('../../utils/scraper-logger');
+const logger = require('../../utils/logger');
 
 /**
  * Clear browser data (cache, cookies, storage)

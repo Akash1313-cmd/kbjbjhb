@@ -2,11 +2,10 @@
  * Link extraction utilities for Google Maps
  */
 
-const logger = require('../../utils/scraper-logger');
+const logger = require('../../utils/logger');
 const CONSTANTS = require('../../utils/constants');
 const { CONFIG, BROWSER_CONFIG } = require('../config/config-loader');
 const { randomDelay } = require('../utils/helpers');
-const { progressManager } = require('../utils/progress-manager');
 
 /**
  * Find scrollable element on Google Maps page
@@ -163,7 +162,7 @@ async function extractPlaceLinksStreaming(page, keyword, onLinksFound, triggerPr
                 }
             }
         } catch (error) {
-            progressManager.logError(error, `Scroll error at ${scrollCount}`);
+            logger.error(`Scroll error at ${scrollCount}`, { error: error.message });
             // Continue scrolling despite errors
         }
     }

@@ -22,7 +22,6 @@ const { requireApiKey, apiLimiter, scrapeLimiter, requireAuth, optionalAuth, req
 const { validateScrapeRequest, validateConfig, sanitizeConfig, validatePagination, sanitizeKeywords } = require('./utils/validation');
 const storage = require('./utils/storage');
 const logger = require('./utils/logger');
-const scheduler = require('./utils/scheduler');
 const LogFormatter = require('./utils/log-formatter');
 
 // Database connection
@@ -83,9 +82,6 @@ const { jobs, results, activeJobsMap, jobCancellationFlags, jobIntervals } = req
 
 // Initialize storage
 storage.init().catch(err => logger.error('Storage init failed', { error: err.message }));
-
-// Start scheduler
-scheduler.start();
 
 // Memory cleanup - Auto-delete old jobs and results (cleanup) - OPTIMIZED FOR MEMORY
 setInterval(() => {

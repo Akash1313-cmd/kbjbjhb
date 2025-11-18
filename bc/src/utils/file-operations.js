@@ -1,6 +1,6 @@
 /**
  * File Operations Utilities
- * Atomic file write and cleanup operations
+ * Simplified file operations
  */
 
 const fs = require('fs');
@@ -8,35 +8,16 @@ const path = require('path');
 const logger = require('./logger');
 
 /**
- * Atomically write data to a file to prevent corruption
+ * Write JSON data to a file
  * @param {string} filePath - Target file path
  * @param {any} data - Data to write (will be JSON stringified)
  */
 function atomicWriteJSON(filePath, data) {
-    const tmpPath = `${filePath}.${Date.now()}.tmp`;
     try {
-        // Write to temporary file
         const jsonString = JSON.stringify(data, null, 2);
-        fs.writeFileSync(tmpPath, jsonString, 'utf8');
-        
-        // Ensure data is written to disk (important for crash safety)
-        const fd = fs.openSync(tmpPath, 'r+');
-        fs.fsyncSync(fd);
-        fs.closeSync(fd);
-        
-        // Atomically rename temp file to target (this is atomic on all platforms)
-        fs.renameSync(tmpPath, filePath);
-        
+        fs.writeFileSync(filePath, jsonString, 'utf8');
         return true;
     } catch (err) {
-        // Clean up temp file if it exists
-        try {
-            if (fs.existsSync(tmpPath)) {
-                fs.unlinkSync(tmpPath);
-            }
-        } catch (cleanupErr) {
-            // Ignore cleanup errors
-        }
         throw err;
     }
 }
