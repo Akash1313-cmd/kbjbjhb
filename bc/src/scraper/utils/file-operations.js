@@ -54,29 +54,6 @@ function saveToJSON(data, keyword, outputDir, isComplete = false) {
     }
     return { jsonFile: finalFilename };
 }
-        // During scraping, only write to the temporary file
-        try {
-            // This is not atomic, but it's for temporary progress updates
-            const jsonData = JSON.stringify(data, null, 2);
-            fs.writeFileSync(tempFilename, jsonData, 'utf8');
-        } catch (error) {
-            logger.error(`Failed to write temporary JSON for ${keyword}`, { error });
-        }
-        // We return the final filename so the UI knows what to eventually expect
-        return { jsonFile: finalFilename };
-    }
-}
-
-/**
- * Load keywords from a text file
- * @param {string} filepath - Path to keywords file
- * @returns {Array<string>|null} Array of keywords or null if file not found
- */
-function loadKeywordsFromFile(filepath) {
-    if (!fs.existsSync(filepath)) {
-        console.log(`⚠️  File not found: ${filepath}`);
-        return null;
-    }
 
 /**
  * Load keywords from a text file
