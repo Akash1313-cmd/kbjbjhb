@@ -5,7 +5,7 @@
 
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const db = require('../database/json-db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
 
@@ -83,7 +83,7 @@ async function requireAuth(req, res, next) {
         const decoded = jwt.verify(token, JWT_SECRET);
         
         // Find user
-        const user = await User.findById(decoded.userId);
+        const user = db.findOne('users', { _id: decoded.userId });
         
         if (!user) {
             return res.status(401).json({
@@ -132,7 +132,7 @@ async function optionalAuth(req, res, next) {
         
         if (token) {
             const decoded = jwt.verify(token, JWT_SECRET);
-            const user = await User.findById(decoded.userId);
+            const user = db.findOne('users', { _id: decoded.userId });
             if (user && user.isActive) {
                 req.user = user;
             }
@@ -158,7 +158,7 @@ async function requireUserApiKey(req, res, next) {
         }
 
         // Find user by API key
-        const user = await User.findOne({ apiKey, isActive: true });
+        const user = db.findOne('users', { apiKey, isActive: true });
         
         if (!user) {
             return res.status(401).json({
@@ -171,8 +171,7 @@ async function requireUserApiKey(req, res, next) {
         req.user = user;
         
         // Log API usage (for analytics/billing)
-        user.lastLogin = new Date();
-        await user.save();
+        db.update('users', { _id: user._id }, { lastLogin: new Date().toISOString() });
 
         next();
 

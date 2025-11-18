@@ -1,13 +1,14 @@
 /**
  * Authentication Routes
- * JWT-based authentication for SaaS platform
+ * JWT-based authentication using JSON database
  */
 
 const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const User = require('../models/User');
+const bcrypt = require('bcryptjs');
+const db = require('../database/json-db');
 const logger = require('../utils/logger');
 const { requireAuth } = require('../middleware/auth');
 const { verifyIdToken } = require('../config/firebase-admin');
@@ -22,6 +23,23 @@ const generateToken = (userId, email) => {
     JWT_SECRET,
     { expiresIn: JWT_EXPIRE }
   );
+};
+
+// Helper function to get public profile
+const getPublicProfile = (user) => {
+  return {
+    id: user._id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    plan: user.plan,
+    avatar: user.avatar,
+    authProvider: user.authProvider,
+    apiKey: user.apiKey,
+    jobsCreated: user.jobsCreated,
+    totalPlacesScraped: user.totalPlacesScraped,
+    createdAt: user.createdAt
+  };
 };
 
 // @route   POST /api/auth/signup
@@ -39,10 +57,8 @@ router.post('/signup', async (req, res) => {
       });
     }
 
-    // No password length restriction - user can set any password
-
     // Check if user exists
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    const existingUser = db.findOne('users', { email: email.toLowerCase() });
     if (existingUser) {
       return res.status(400).json({
         error: 'User exists',
@@ -50,11 +66,26 @@ router.post('/signup', async (req, res) => {
       });
     }
 
+    // Hash password
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    // Generate API key
+    const apiKey = crypto.randomBytes(16).toString('hex');
+
     // Create user
-    const user = await User.create({
+    const user = db.insert('users', {
       name,
       email: email.toLowerCase(),
-      password
+      password: hashedPassword,
+      role: 'user',
+      plan: 'free',
+      jobsCreated: 0,
+      totalPlacesScraped: 0,
+      apiKey: apiKey,
+      authProvider: 'local',
+      isActive: true,
+      lastLogin: null
     });
 
     // Generate token
@@ -65,7 +96,7 @@ router.post('/signup', async (req, res) => {
     res.status(201).json({
       status: 'success',
       token,
-      user: user.getPublicProfile()
+      user: getPublicProfile(user)
     });
 
   } catch (error) {
@@ -118,27 +149,46 @@ router.post('/google-signin', async (req, res) => {
     }
 
     // Find or create user
-    let user = await User.findOne({ email: verifiedEmail.toLowerCase() });
+    let user = db.findOne('users', { email: verifiedEmail.toLowerCase() });
     
     if (!user) {
       // Create new user with Google auth
-      user = await User.create({
+      const apiKey = crypto.randomBytes(16).toString('hex');
+      const randomPassword = Math.random().toString(36).slice(-8);
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(randomPassword, salt);
+
+      user = db.insert('users', {
         name: verifiedName,
         email: verifiedEmail.toLowerCase(),
-        password: Math.random().toString(36).slice(-8), // Random password (won't be used)
+        password: hashedPassword,
         googleId: verifiedUid,
         avatar: photoURL,
-        authProvider: 'google'
+        authProvider: 'google',
+        role: 'user',
+        plan: 'free',
+        jobsCreated: 0,
+        totalPlacesScraped: 0,
+        apiKey: apiKey,
+        isActive: true,
+        lastLogin: new Date().toISOString()
       });
       
       logger.info('Google user registered', { userId: user._id, email: user.email });
     } else {
       // Update existing user
-      user.lastLogin = new Date();
-      if (!user.googleId) user.googleId = verifiedUid;
-      if (photoURL && !user.avatar) user.avatar = photoURL;
-      if (!user.authProvider) user.authProvider = 'google';
-      await user.save();
+      const updates = {
+        lastLogin: new Date().toISOString()
+      };
+      
+      if (!user.googleId) updates.googleId = verifiedUid;
+      if (photoURL && !user.avatar) updates.avatar = photoURL;
+      if (!user.authProvider) updates.authProvider = 'google';
+      
+      db.update('users', { _id: user._id }, updates);
+      
+      // Re-fetch updated user
+      user = db.findOne('users', { _id: user._id });
       
       logger.info('Google user signed in', { userId: user._id, email: user.email });
     }
@@ -149,7 +199,7 @@ router.post('/google-signin', async (req, res) => {
     res.json({
       status: 'success',
       token,
-      user: user.getPublicProfile()
+      user: getPublicProfile(user)
     });
 
   } catch (error) {
@@ -176,8 +226,8 @@ router.post('/signin', async (req, res) => {
       });
     }
 
-    // Find user (include password for comparison)
-    const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+    // Find user (password is included in json-db)
+    const user = db.findOne('users', { email: email.toLowerCase() });
     
     if (!user) {
       return res.status(401).json({
@@ -195,7 +245,7 @@ router.post('/signin', async (req, res) => {
     }
 
     // Verify password
-    const isPasswordValid = await user.comparePassword(password);
+    const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       return res.status(401).json({
         error: 'Invalid credentials',
@@ -204,18 +254,20 @@ router.post('/signin', async (req, res) => {
     }
 
     // Update last login
-    user.lastLogin = new Date();
-    await user.save();
+    db.update('users', { _id: user._id }, { lastLogin: new Date().toISOString() });
+
+    // Re-fetch updated user
+    const updatedUser = db.findOne('users', { _id: user._id });
 
     // Generate token
-    const token = generateToken(user._id, user.email);
+    const token = generateToken(updatedUser._id, updatedUser.email);
 
-    logger.info('User signed in', { userId: user._id, email: user.email });
+    logger.info('User signed in', { userId: updatedUser._id, email: updatedUser.email });
 
     res.json({
       status: 'success',
       token,
-      user: user.getPublicProfile()
+      user: getPublicProfile(updatedUser)
     });
 
   } catch (error) {
@@ -246,25 +298,25 @@ router.get('/me', async (req, res) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     
     // Find user
-    const user = await User.findById(decoded.userId);
+    const user = db.findOne('users', { _id: decoded.userId });
     
     if (!user) {
       return res.status(404).json({
         error: 'User not found',
-        message: 'User account no longer exists'
+        message: 'User account not found'
       });
     }
 
     res.json({
       status: 'success',
-      user: user.getPublicProfile()
+      user: getPublicProfile(user)
     });
 
   } catch (error) {
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({
         error: 'Invalid token',
-        message: 'Authentication failed'
+        message: 'Token is invalid or malformed'
       });
     }
     
@@ -283,42 +335,42 @@ router.get('/me', async (req, res) => {
   }
 });
 
-// @route   PUT /api/auth/profile
+// @route   PUT /api/auth/update-profile
 // @desc    Update user profile
-// @access  Private
-router.put('/profile', async (req, res) => {
+// @access  Private (JWT Auth)
+router.put('/update-profile', requireAuth, async (req, res) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
-    
-    if (!token) {
-      return res.status(401).json({
-        error: 'No token',
-        message: 'Authentication required'
+    const { name, avatar } = req.body;
+
+    const user = db.findOne('users', { _id: req.user._id });
+
+    if (!user) {
+      return res.status(404).json({
+        error: 'User not found',
+        message: 'User account not found'
       });
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await User.findById(decoded.userId);
-    
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    // Update fields
+    const updates = {};
+    if (name) updates.name = name;
+    if (avatar) updates.avatar = avatar;
 
-    // Update allowed fields
-    const { name } = req.body;
-    if (name) user.name = name;
+    db.update('users', { _id: user._id }, updates);
 
-    await user.save();
+    // Get updated user
+    const updatedUser = db.findOne('users', { _id: user._id });
 
     logger.info('Profile updated', { userId: user._id });
 
     res.json({
       status: 'success',
-      user: user.getPublicProfile()
+      message: 'Profile updated successfully',
+      user: getPublicProfile(updatedUser)
     });
 
   } catch (error) {
-    logger.error('Profile update error', { error: error.message });
+    logger.error('Update profile error', { error: error.message });
     res.status(500).json({
       error: 'Update failed',
       message: error.message
@@ -328,11 +380,11 @@ router.put('/profile', async (req, res) => {
 
 // @route   POST /api/auth/change-password
 // @desc    Change user password
-// @access  Private
+// @access  Private (JWT Auth)
 router.post('/change-password', async (req, res) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
     const { currentPassword, newPassword } = req.body;
+    const token = req.headers.authorization?.replace('Bearer ', '');
 
     if (!token) {
       return res.status(401).json({
@@ -348,17 +400,15 @@ router.post('/change-password', async (req, res) => {
       });
     }
 
-    // No password length restriction - user can set any password
-
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await User.findById(decoded.userId).select('+password');
+    const user = db.findOne('users', { _id: decoded.userId });
     
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
     // Verify current password
-    const isValid = await user.comparePassword(currentPassword);
+    const isValid = await bcrypt.compare(currentPassword, user.password);
     if (!isValid) {
       return res.status(401).json({
         error: 'Invalid password',
@@ -366,9 +416,12 @@ router.post('/change-password', async (req, res) => {
       });
     }
 
-    // Set new password (will be hashed by pre-save hook)
-    user.password = newPassword;
-    await user.save();
+    // Hash new password
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+    // Update password
+    db.update('users', { _id: user._id }, { password: hashedPassword });
 
     logger.info('Password changed', { userId: user._id });
 
@@ -391,7 +444,7 @@ router.post('/change-password', async (req, res) => {
 // @access  Private (JWT Auth)
 router.post('/regenerate-api-key', requireAuth, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
+    const user = db.findOne('users', { _id: req.user._id });
 
     if (!user) {
       return res.status(404).json({
@@ -407,8 +460,7 @@ router.post('/regenerate-api-key', requireAuth, async (req, res) => {
     const oldApiKey = user.apiKey;
 
     // Update user's API key
-    user.apiKey = newApiKey;
-    await user.save();
+    db.update('users', { _id: user._id }, { apiKey: newApiKey });
 
     logger.info('API key regenerated', { 
       userId: user._id, 

@@ -1,0 +1,23 @@
+{
+  "users": [
+    {
+      "name": "Administrator",
+      "email": "admin@example.com",
+      "password": "$2a$10$Lxj4tfomlRQOVQfs86rJBuD4UxyQtThBpO4VZIgPwnfyjIcAiJZ5C",
+      "role": "admin",
+      "plan": "enterprise",
+      "jobsCreated": 0,
+      "totalPlacesScraped": 0,
+      "apiKey": "dba1be4bffa1d00edb92446a0e055b90",
+      "authProvider": "local",
+      "isActive": true,
+      "lastLogin": null,
+      "_id": 1,
+      "createdAt": "2025-11-18T19:30:29.435Z",
+      "updatedAt": "2025-11-18T19:30:29.436Z"
+    }
+  ],
+  "jobs": [],
+  "places": [],
+  "apiKeys": []
+}
