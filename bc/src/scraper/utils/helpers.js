@@ -3,9 +3,8 @@
  */
 
 const { execSync } = require('child_process');
-const logger = require('../../utils/scraper-logger');
+const logger = require('../../utils/logger');
 const { CONFIG } = require('../config/config-loader');
-const { progressManager } = require('./progress-manager');
 
 /**
  * Generate random delay in milliseconds
@@ -61,7 +60,7 @@ async function retryOperation(operation, context, maxAttempts = CONFIG.retryAtte
             }
             
             if (attempt === maxAttempts) {
-                progressManager.logError(error, context);
+                logger.error(`${context}: ${error.message}`, { attempt, maxAttempts });
                 throw error;
             }
             const delay = CONFIG.retryDelay * attempt; // Exponential backoff

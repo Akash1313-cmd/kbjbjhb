@@ -22,7 +22,6 @@ const { requireApiKey, apiLimiter, scrapeLimiter, requireAuth, optionalAuth, req
 const { validateScrapeRequest, validateConfig, sanitizeConfig, validatePagination, sanitizeKeywords } = require('./utils/validation');
 const storage = require('./utils/storage');
 const logger = require('./utils/logger');
-const scheduler = require('./utils/scheduler');
 const LogFormatter = require('./utils/log-formatter');
 
 // Database connection
@@ -83,9 +82,6 @@ const { jobs, results, activeJobsMap, jobCancellationFlags, jobIntervals } = req
 
 // Initialize storage
 storage.init().catch(err => logger.error('Storage init failed', { error: err.message }));
-
-// Start scheduler
-scheduler.start();
 
 // Memory cleanup - Auto-delete old jobs and results (cleanup) - OPTIMIZED FOR MEMORY
 setInterval(() => {
@@ -835,6 +831,62 @@ app.post('/api/jobs/:id/cancel', requireAuthOrApiKey, async (req, res) => {
         logger.error('Error cancelling job', { error: error.message });
         res.status(500).json({ error: 'Failed to cancel job' });
     }
+});
+
+// GET /api/jobs/:jobId/stream - Server-Sent Events (SSE) for real-time job updates
+app.get('/api/jobs/:jobId/stream', optionalAuth, (req, res) => {
+    const jobId = req.params.jobId;
+    
+    // Check if job exists
+    let job = jobs.get(jobId);
+    if (!job) {
+        return res.status(404).json({ error: 'Job not found' });
+    }
+    
+    // Set headers for SSE
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    
+    // Send initial connection message
+    res.write(`data: ${JSON.stringify({ type: 'connected', jobId })}\n\n`);
+    
+    // Send current job status
+    const sendUpdate = () => {
+        const currentJob = jobs.get(jobId);
+        if (currentJob) {
+            res.write(`data: ${JSON.stringify({
+                type: 'job_progress',
+                jobId,
+                status: currentJob.status,
+                progress: currentJob.progress,
+                timestamp: new Date().toISOString()
+            })}\n\n`);
+            
+            // If job is completed or failed, close the connection
+            if (currentJob.status === 'completed' || currentJob.status === 'failed') {
+                res.write(`data: ${JSON.stringify({
+                    type: 'job_completed',
+                    jobId,
+                    status: currentJob.status,
+                    timestamp: new Date().toISOString()
+                })}\n\n`);
+                res.end();
+            }
+        }
+    };
+    
+    // Send updates every 2 seconds
+    const interval = setInterval(sendUpdate, 2000);
+    
+    // Send initial update
+    sendUpdate();
+    
+    // Clean up on client disconnect
+    req.on('close', () => {
+        clearInterval(interval);
+    });
 });
 
 // GET /api/results/:jobId - Get results (MongoDB fallback)

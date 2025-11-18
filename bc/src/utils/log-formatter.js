@@ -1,5 +1,6 @@
 /**
- * Log Formatter - Beautiful Console & API Logs
+ * Log Formatter - API Response Logs
+ * Simplified version for API log formatting
  */
 
 class LogFormatter {
@@ -40,7 +41,7 @@ class LogFormatter {
             });
         }
         
-        // Job Progress (if available)
+        // Job Progress
         if (job.progress && job.status === 'in_progress') {
             logs.push({
                 timestamp: new Date().toISOString(),
@@ -96,51 +97,6 @@ class LogFormatter {
         return logs;
     }
     
-    // Format for console output
-    static formatConsole(log) {
-        const timestamp = new Date(log.timestamp).toLocaleString('en-IN');
-        const icon = log.icon || this.getIconForLevel(log.level);
-        
-        return `${icon} [${timestamp}] ${log.category}: ${log.message}`;
-    }
-    
-    // Format detailed console output with box
-    static formatDetailedConsole(log) {
-        const lines = [];
-        const width = 70;
-        
-        lines.push('═'.repeat(width));
-        lines.push(`${log.icon || '📋'} ${log.category.toUpperCase()}`);
-        lines.push('─'.repeat(width));
-        lines.push(`Time: ${new Date(log.timestamp).toLocaleString('en-IN')}`);
-        lines.push(`Level: ${log.level}`);
-        lines.push(`Message: ${log.message}`);
-        
-        if (log.details && Object.keys(log.details).length > 0) {
-            lines.push('─'.repeat(width));
-            lines.push('Details:');
-            for (const [key, value] of Object.entries(log.details)) {
-                lines.push(`  • ${key}: ${JSON.stringify(value)}`);
-            }
-        }
-        
-        lines.push('═'.repeat(width));
-        
-        return lines.join('\n');
-    }
-    
-    // Get icon for log level
-    static getIconForLevel(level) {
-        const icons = {
-            'INFO': 'ℹ️',
-            'SUCCESS': '✅',
-            'WARNING': '⚠️',
-            'ERROR': '❌',
-            'DEBUG': '🔍'
-        };
-        return icons[level] || '📋';
-    }
-    
     // Format summary
     static formatSummary(logs) {
         const summary = {
@@ -151,13 +107,8 @@ class LogFormatter {
         };
         
         logs.forEach(log => {
-            // Count by level
             summary.byLevel[log.level] = (summary.byLevel[log.level] || 0) + 1;
-            
-            // Count by category
             summary.byCategory[log.category] = (summary.byCategory[log.category] || 0) + 1;
-            
-            // Add to timeline
             summary.timeline.push({
                 time: log.timestamp,
                 event: log.category,

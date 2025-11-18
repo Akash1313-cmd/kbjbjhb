@@ -7,7 +7,7 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteerExtra.use(StealthPlugin());
 const puppeteer = puppeteerExtra;
 const fs = require('fs');
-const logger = require('../../utils/scraper-logger');
+const logger = require('../../utils/logger');
 const { BROWSER_LAUNCH_MIN_DELAY_MS, BROWSER_LAUNCH_MAX_DELAY_MS } = require('../config/browser-constants');
 const { BROWSER_CONFIG } = require('../config/config-loader');
 const { buildChromeArgs, prepareIgnoreArgs } = require('./config');

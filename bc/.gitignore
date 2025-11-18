@@ -3,3 +3,4 @@ node_modules/
 
 # Backup files
 *.backup
+logs/

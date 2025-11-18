@@ -4,38 +4,19 @@
 
 const fs = require('fs');
 const path = require('path');
-const logger = require('../../utils/scraper-logger');
+const logger = require('../../utils/logger');
 
 /**
- * Atomically write JSON data to a file to prevent corruption
+ * Write JSON data to a file
  * @param {string} filePath - Target file path
  * @param {any} data - Data to write (will be JSON stringified)
  */
 function atomicWriteJSON(filePath, data) {
-    const tmpPath = `${filePath}.${Date.now()}.tmp`;
     try {
-        // Write to temporary file
         const jsonString = JSON.stringify(data, null, 2);
-        fs.writeFileSync(tmpPath, jsonString, 'utf8');
-        
-        // Ensure data is written to disk (important for crash safety)
-        const fd = fs.openSync(tmpPath, 'r+');
-        fs.fsyncSync(fd);
-        fs.closeSync(fd);
-        
-        // Atomically rename temp file to target (this is atomic on all platforms)
-        fs.renameSync(tmpPath, filePath);
-        
+        fs.writeFileSync(filePath, jsonString, 'utf8');
         return true;
     } catch (err) {
-        // Clean up temp file if it exists
-        try {
-            if (fs.existsSync(tmpPath)) {
-                fs.unlinkSync(tmpPath);
-            }
-        } catch (cleanupErr) {
-            // Ignore cleanup errors
-        }
         throw err;
     }
 }
@@ -62,44 +43,26 @@ function saveToJSON(data, keyword, outputDir, isComplete = false) {
     // Create sanitized filename
     const sanitized = keyword.replace(/[\\/*?:"<>|]/g, '').replace(/\s+/g, '_').substring(0, 50);
     const finalFilename = path.join(outputDir, `${sanitized}.json`);
-    const tempFilename = path.join(outputDir, `${sanitized}.temp.json`);
 
-    if (isComplete) {
-        // On completion, atomically write the final data to the main .json file
-        try {
-            atomicWriteJSON(finalFilename, data);
-            // Clean up the temp file if it exists
-            if (fs.existsSync(tempFilename)) {
-                fs.unlinkSync(tempFilename);
-            }
+    try {
+        fs.writeFileSync(finalFilename, JSON.stringify(data, null, 2), 'utf8');
+        if (isComplete) {
             logger.success(`Final results saved to ${finalFilename}`);
-        } catch (error) {
-            logger.error(`Failed to write final JSON for ${keyword}`, { error });
         }
-        return { jsonFile: finalFilename };
-    } else {
-        // During scraping, only write to the temporary file
-        try {
-            // This is not atomic, but it's for temporary progress updates
-            const jsonData = JSON.stringify(data, null, 2);
-            fs.writeFileSync(tempFilename, jsonData, 'utf8');
-        } catch (error) {
-            logger.error(`Failed to write temporary JSON for ${keyword}`, { error });
-        }
-        // We return the final filename so the UI knows what to eventually expect
-        return { jsonFile: finalFilename };
+    } catch (error) {
+        logger.error(`Failed to write JSON for ${keyword}`, { error });
     }
+    return { jsonFile: finalFilename };
 }
 
 /**
  * Load keywords from a text file
- * @param {string} filepath - Path to keywords file
- * @returns {Array<string>|null} Array of keywords or null if file not found
+ * @param {string} filepath - Path to file containing keywords (one per line)
+ * @returns {Array<string>} Array of keywords
  */
 function loadKeywordsFromFile(filepath) {
     if (!fs.existsSync(filepath)) {
-        console.log(`⚠️  File not found: ${filepath}`);
-        return null;
+        throw new Error(`File not found: ${filepath}`);
     }
     
     const content = fs.readFileSync(filepath, 'utf-8');

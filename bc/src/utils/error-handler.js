@@ -263,49 +263,26 @@ const performanceMonitor = {
     }
 };
 
-// Circuit breaker for external services
-class CircuitBreaker {
-    constructor(name, options = {}) {
-        this.name = name;
-        this.failureThreshold = options.failureThreshold || 5;
-        this.recoveryTimeout = options.recoveryTimeout || 60000;
-        this.failures = 0;
-        this.lastFailureTime = null;
-        this.state = 'closed'; // closed, open, half-open
-    }
+// Simple retry utility with exponential backoff
+async function retryWithBackoff(fn, options = {}) {
+    const maxAttempts = options.maxAttempts || 3;
+    const delay = options.delay || 1000;
+    const maxDelay = options.maxDelay || 10000;
     
-    async execute(fn) {
-        if (this.state === 'open') {
-            const now = Date.now();
-            if (now - this.lastFailureTime > this.recoveryTimeout) {
-                this.state = 'half-open';
-            } else {
-                throw new AppError(`Circuit breaker is open for ${this.name}`, 503);
-            }
-        }
-        
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            const result = await fn();
-            
-            if (this.state === 'half-open') {
-                this.state = 'closed';
-                this.failures = 0;
-                logger.info(`Circuit breaker closed for ${this.name}`);
-            }
-            
-            return result;
+            return await fn();
         } catch (error) {
-            this.failures++;
-            this.lastFailureTime = Date.now();
-            
-            if (this.failures >= this.failureThreshold) {
-                this.state = 'open';
-                logger.error(`Circuit breaker opened for ${this.name}`, {
-                    failures: this.failures
-                });
+            if (attempt === maxAttempts) {
+                throw error;
             }
             
-            throw error;
+            const backoffDelay = Math.min(delay * Math.pow(2, attempt - 1), maxDelay);
+            logger.warn(`Retry attempt ${attempt}/${maxAttempts} after ${backoffDelay}ms`, {
+                error: error.message
+            });
+            
+            await new Promise(resolve => setTimeout(resolve, backoffDelay));
         }
     }
 }
@@ -332,5 +309,5 @@ module.exports = {
     handleCastError,
     initErrorMonitoring,
     performanceMonitor,
-    CircuitBreaker
+    retryWithBackoff
 };
