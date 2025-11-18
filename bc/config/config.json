@@ -1,0 +1,52 @@
+{
+  "_comment": "GMap Extractor - Unified Configuration (v3.0.1)",
+  "_version": "3.0.1",
+  
+  "browser": {
+    "headless": false,
+    "windowWidth": 800,
+    "windowHeight": 900,
+    "blockImages": true,
+    "blockMedia": true
+  },
+  
+  "workers": {
+    "parallelWorkers": 5,
+    "maxWorkers": 5,
+    "minWorkers": 1,
+    "linkExtractionWorkers": 1
+  },
+  
+  "scraping": {
+    "scrollTimeout": 60000,
+    "smartScrolling": true,
+    "maxLinksPerKeyword": 120,
+    "timeout": 30000,
+    "retryAttempts": 3,
+    "retryDelay": 2000
+  },
+  
+  "output": {
+    "outputDir": "./results",
+    "generateExcel": true,
+    "generateJSON": true
+  },
+  
+  "phone": {
+    "defaultCountry": "IN",
+    "enableInternational": true,
+    "supportedCountries": ["IN", "US", "GB", "AU", "AE"]
+  },
+  
+  "features": {
+    "enableErrorLogging": true,
+    "enableResume": true,
+    "enableWebSocket": true
+  },
+  
+  "performance": {
+    "browserRestartInterval": 20,
+    "rateLimitDelay": 1000,
+    "adaptiveRateLimiting": true
+  }
+}

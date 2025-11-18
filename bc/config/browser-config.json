@@ -1,0 +1,66 @@
+{
+  "comment": "Browser Control Configuration - Easy to modify browser behavior",
+  
+  "visibility": {
+    "headless": true,
+    "comment": "true for production (30% less memory), false for debugging"
+  },
+  
+  "windowSettings": {
+    "startMaximized": false,
+    "windowWidth": 400,
+    "windowHeight": 1080,
+    "windowPositionX": 0,
+    "windowPositionY": 0,
+    "comment": "Width = 400px (minimum), Height = 1080px (maximum for most screens)"
+  },
+  
+  "dualBrowserMode": {
+    "enabled": true,
+    "comment": "true = 2 browsers (1 for links, 1 for data), false = single browser",
+    "browser1": {
+      "name": "Link Extractor",
+      "position": "left",
+      "windowWidth": 400,
+      "windowHeight": 1080,
+      "windowPositionX": 0,
+      "windowPositionY": 0
+    },
+    "browser2": {
+      "name": "Data Workers",
+      "position": "right",
+      "windowWidth": 400,
+      "windowHeight": 1080,
+      "windowPositionX": 410,
+      "windowPositionY": 0
+    }
+  },
+  
+  "workers": {
+    "parallelWorkers": 3,
+    "maxWorkers": 5,
+    "minWorkers": 1,
+    "comment": "Production: 3 workers optimal for stability, max 5 to avoid detection"
+  },
+  
+  "performance": {
+    "blockImages": true,
+    "blockMedia": true,
+    "comment": "Block images/media for faster loading"
+  },
+  
+  "scrolling": {
+    "idleTimeout": 10,
+    "scrollDelay": {
+      "min": 1500,
+      "max": 3000
+    },
+    "checkEndOfList": true,
+    "comment": "Production: balanced delays to avoid detection while maintaining speed"
+  },
+  
+  "devtools": {
+    "enabled": false,
+    "comment": "Open Chrome DevTools automatically"
+  }
+}
