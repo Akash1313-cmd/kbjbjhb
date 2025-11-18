@@ -403,14 +403,12 @@ app.get('/api/jobs/my', requireAuth, async (req, res) => {
         
         const skip = (parseInt(page) - 1) * parseInt(limit);
         
-        const [userJobs, total] = await Promise.all([
-            Job.find(query)
-                .sort({ createdAt: -1 })
-                .limit(parseInt(limit))
-                .skip(skip)
-                .select('-__v'),
-            Job.countDocuments(query)
-        ]);
+        const userJobs = db.findWithOptions('jobs', query, {
+            sort: { createdAt: -1 },
+            limit: parseInt(limit),
+            skip: skip
+        });
+        const total = db.countDocuments('jobs', query);
         
         res.json({
             jobs: userJobs,
@@ -473,15 +471,13 @@ app.get('/api/jobs', optionalAuth, async (req, res) => {
 
         const skip = (page - 1) * limit;
 
-        // Always fetch from MongoDB as the single source of truth for job metadata
-        const [dbJobs, total] = await Promise.all([
-            Job.find(query)
-                .sort({ createdAt: -1 })
-                .limit(limit)
-                .skip(skip)
-                .lean(), // Use .lean() for faster, plain JS objects
-            Job.countDocuments(query)
-        ]);
+        // Always fetch from database as the single source of truth for job metadata
+        const dbJobs = db.findWithOptions('jobs', query, {
+            sort: { createdAt: -1 },
+            limit: limit,
+            skip: skip
+        });
+        const total = db.countDocuments('jobs', query);
 
         // Enrich jobs with the most accurate placesCount from local files
         const enrichedJobs = dbJobs.map(job => {
@@ -531,13 +527,13 @@ app.delete('/api/jobs/:id', requireAuth, async (req, res) => {
         const jobId = req.params.id;
         let job = jobs.get(jobId);
         
-        // If not in memory, check MongoDB
+        // If not in memory, check database
         if (!job) {
-            const dbJob = await Job.findOne({ jobId });
+            const dbJob = db.findOne('jobs', { jobId });
             if (!dbJob) {
                 return res.status(404).json({ error: 'Job not found' });
             }
-            job = dbJob.toObject();
+            job = dbJob;
         }
         
         // Check if job belongs to user
@@ -552,13 +548,11 @@ app.delete('/api/jobs/:id', requireAuth, async (req, res) => {
             });
         }
         
-        // Delete from MongoDB
-        const [deletedJob, deletedPlaces] = await Promise.all([
-            Job.deleteOne({ jobId }),
-            Place.deleteMany({ jobId })
-        ]);
+        // Delete from database
+        const deletedJob = db.delete('jobs', { jobId });
+        const deletedPlaces = db.delete('places', { jobId });
         
-        logger.info('Deleted from MongoDB', { 
+        logger.info('Deleted from database', { 
             jobId, 
             jobDeleted: deletedJob.deletedCount,
             placesDeleted: deletedPlaces.deletedCount 
@@ -653,11 +647,11 @@ app.get('/api/jobs/:id', optionalAuth, async (req, res) => {
         
         // If not in memory, load from MongoDB
         if (!job) {
-            const dbJob = await Job.findOne({ jobId: req.params.id });
+            const dbJob = db.findOne("jobs", { jobId: req.params.id });
             if (!dbJob) {
                 return res.status(404).json({ error: 'Job not found' });
             }
-            job = dbJob.toObject();
+            job = dbJob;
         }
         
         // Check if job belongs to current user
@@ -702,11 +696,11 @@ app.post('/api/restart/:id', requireAuthOrApiKey, async (req, res) => {
         let job = jobs.get(jobId);
         
         if (!job) {
-            const dbJob = await Job.findOne({ jobId });
+            const dbJob = db.findOne("jobs", { jobId });
             if (!dbJob) {
                 return res.status(404).json({ error: 'Job not found' });
             }
-            job = dbJob.toObject();
+            job = dbJob;
         }
         
         // Check ownership
@@ -763,11 +757,11 @@ app.post('/api/cancel/:id', requireAuthOrApiKey, async (req, res) => {
         let job = jobs.get(jobId);
         
         if (!job) {
-            const dbJob = await Job.findOne({ jobId });
+            const dbJob = db.findOne("jobs", { jobId });
             if (!dbJob) {
                 return res.status(404).json({ error: 'Job not found' });
             }
-            job = dbJob.toObject();
+            job = dbJob;
         }
         
         // Check ownership
@@ -832,11 +826,11 @@ app.post('/api/jobs/:id/cancel', requireAuthOrApiKey, async (req, res) => {
         let job = jobs.get(jobId);
         
         if (!job) {
-            const dbJob = await Job.findOne({ jobId });
+            const dbJob = db.findOne("jobs", { jobId });
             if (!dbJob) {
                 return res.status(404).json({ error: 'Job not found' });
             }
-            job = dbJob.toObject();
+            job = dbJob;
         }
         
         // Check ownership
@@ -901,11 +895,11 @@ app.get('/api/results/:jobId', optionalAuth, async (req, res) => {
         
         // If not in memory, load from MongoDB
         if (!job) {
-            const dbJob = await Job.findOne({ jobId: req.params.jobId });
+            const dbJob = db.findOne("jobs", { jobId: req.params.jobId });
             if (!dbJob) {
                 return res.status(404).json({ error: 'Job not found' });
             }
-            job = dbJob.toObject();
+            job = dbJob;
             jobs.set(job.jobId, job); // Cache in memory
         }
         
@@ -1055,11 +1049,11 @@ app.get('/api/results/:jobId/download', requireAuth, async (req, res) => {
         
         // If not in memory, load from MongoDB
         if (!job) {
-            const dbJob = await Job.findOne({ jobId: req.params.jobId });
+            const dbJob = db.findOne("jobs", { jobId: req.params.jobId });
             if (!dbJob) {
                 return res.status(404).json({ error: 'Job not found' });
             }
-            job = dbJob.toObject();
+            job = dbJob;
         }
         
         // Check ownership
@@ -1099,11 +1093,11 @@ app.get('/api/results/:jobId/keyword/:index', requireAuth, async (req, res) => {
         
         // If not in memory, load from MongoDB
         if (!job) {
-            const dbJob = await Job.findOne({ jobId: req.params.jobId });
+            const dbJob = db.findOne("jobs", { jobId: req.params.jobId });
             if (!dbJob) {
                 return res.status(404).json({ error: 'Job not found' });
             }
-            job = dbJob.toObject();
+            job = dbJob;
         }
         
         // Check ownership
@@ -1142,11 +1136,11 @@ app.get('/api/analytics/job/:jobId', requireAuth, async (req, res) => {
         
         // If not in memory, load from MongoDB
         if (!job) {
-            const dbJob = await Job.findOne({ jobId: req.params.jobId });
+            const dbJob = db.findOne("jobs", { jobId: req.params.jobId });
             if (!dbJob) {
                 return res.status(404).json({ error: 'Job not found' });
             }
-            job = dbJob.toObject();
+            job = dbJob;
         }
         
         const jobResults = results.get(req.params.jobId) || {};
@@ -1388,7 +1382,7 @@ app.get('/api/stats', optionalAuth, async (req, res) => {
             return res.json({ activeJobs: 0, queuedJobs: 0, completedJobs: 0, completedToday: 0, placesExtracted: 0, totalJobs: 0, totalPlaces: 0 });
         }
 
-        const userJobsArray = await Job.find({ userId: req.user._id }).lean();
+        const userJobsArray = db.find("jobs", { userId: req.user._id });
 
         const activeJobCount = userJobsArray.filter(j => j.status === 'in_progress' || j.status === 'processing').length;
         const queuedJobs = userJobsArray.filter(j => j.status === 'queued').length;
@@ -1696,11 +1690,11 @@ app.get('/api/results/:jobId/summary', requireAuth, async (req, res) => {
         
         // If not in memory, load from MongoDB
         if (!job) {
-            const dbJob = await Job.findOne({ jobId: req.params.jobId });
+            const dbJob = db.findOne("jobs", { jobId: req.params.jobId });
             if (!dbJob) {
                 return res.status(404).json({ error: 'Job not found' });
             }
-            job = dbJob.toObject();
+            job = dbJob;
         }
         
         // Check ownership
@@ -1788,11 +1782,11 @@ app.post('/api/results/:jobId/filter', requireAuth, async (req, res) => {
         
         // If not in memory, load from MongoDB
         if (!job) {
-            const dbJob = await Job.findOne({ jobId: req.params.jobId });
+            const dbJob = db.findOne("jobs", { jobId: req.params.jobId });
             if (!dbJob) {
                 return res.status(404).json({ error: 'Job not found' });
             }
-            job = dbJob.toObject();
+            job = dbJob;
         }
         
         // Check ownership
@@ -1914,9 +1908,9 @@ app.post('/api/merge', requireAuthOrApiKey, async (req, res) => {
             
             // Load from MongoDB if not in memory
             if (!job) {
-                const dbJob = await Job.findOne({ jobId });
+                const dbJob = db.findOne("jobs", { jobId });
                 if (dbJob) {
-                    job = dbJob.toObject();
+                    job = dbJob;
                 }
             }
             
@@ -2088,11 +2082,11 @@ app.get('/api/logs/:jobId', requireAuth, async (req, res) => {
         
         // If not in memory, load from MongoDB
         if (!job) {
-            const dbJob = await Job.findOne({ jobId: req.params.jobId });
+            const dbJob = db.findOne("jobs", { jobId: req.params.jobId });
             if (!dbJob) {
                 return res.status(404).json({ error: 'Job not found' });
             }
-            job = dbJob.toObject();
+            job = dbJob;
         }
         
         // Check ownership
@@ -2143,11 +2137,11 @@ app.get('/api/logs/:jobId/html', requireAuth, async (req, res) => {
         
         // If not in memory, load from MongoDB
         if (!job) {
-            const dbJob = await Job.findOne({ jobId: req.params.jobId });
+            const dbJob = db.findOne("jobs", { jobId: req.params.jobId });
             if (!dbJob) {
                 return res.status(404).send('<h1>Job Not Found</h1>');
             }
-            job = dbJob.toObject();
+            job = dbJob;
         }
         
         // Check ownership
@@ -2315,11 +2309,11 @@ app.post('/api/alerts', requireAuthOrApiKey, async (req, res) => {
         let job = jobs.get(jobId);
         
         if (!job) {
-            const dbJob = await Job.findOne({ jobId });
+            const dbJob = db.findOne("jobs", { jobId });
             if (!dbJob) {
                 return res.status(404).json({ error: 'Job not found' });
             }
-            job = dbJob.toObject();
+            job = dbJob;
         }
         
         // Check ownership
@@ -2506,11 +2500,11 @@ app.get('/api/performance/metrics', requireAuth, (req, res) => {
  */
 const PORT = process.env.PORT || 3000;
 
-// Connect to MongoDB then start server
+// Initialize JSON database and start server
 const startServer = async () => {
   try {
-    // Connect to database
-    await connectDB();
+    // Initialize database
+    await initDatabase();
     
     // Initialize Production Manager for memory optimization
     const productionManager = getProductionManager();
@@ -2525,7 +2519,7 @@ const startServer = async () => {
       }
     }
     
-    // Load recent jobs from MongoDB into memory
+    // Load recent jobs from database into memory
     await loadRecentJobsFromDB();
     
     // Clean up old temporary files
@@ -2540,7 +2534,7 @@ const startServer = async () => {
 
 ✓ Server running on: http://localhost:${PORT}
 ✓ WebSocket: Enabled
-✓ MongoDB: Connected
+✓ Database: JSON File-Based (db.json)
 ✓ Authentication: JWT-based
 ✓ Total APIs: 55+ endpoints
 
@@ -2551,6 +2545,7 @@ const startServer = async () => {
 
 ★ NEW: User Authentication, JWT Tokens, Protected Routes
 ★ SaaS Ready: 1000+ users supported
+★ No MongoDB Required: Simple JSON file database
 
 Ready to accept requests!
       `);

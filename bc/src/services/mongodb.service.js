@@ -1,37 +1,37 @@
 /**
- * MongoDB Service
+ * Database Service
  * Database operations for places and other entities
  */
 
-const Place = require('../models/Place');
+const db = require('../database/json-db');
 const logger = require('../utils/logger');
 const path = require('path');
 const fs = require('fs');
 
 /**
- * Save places to MongoDB
+ * Save places to database
  * @param {string} jobId - Job ID
  * @param {string} userId - User ID
  * @param {string} keyword - Keyword
  * @param {Array} places - Array of place objects
  */
-async function savePlacesToMongoDB(jobId, userId, keyword, places) {
+async function savePlacesToDB(jobId, userId, keyword, places) {
     try {
-        const placeDocs = places.map(place => ({
-            jobId,
-            userId,
-            keyword,
-            ...place
-        }));
-        
-        // Use insertMany with ordered: false to continue on duplicates
-        await Place.insertMany(placeDocs, { ordered: false });
-        logger.info('Places saved to MongoDB', { jobId, keyword, count: places.length });
-    } catch (error) {
-        // Ignore duplicate key errors (E11000)
-        if (error.code !== 11000) {
-            logger.error('Failed to save places to MongoDB', { error: error.message, jobId, keyword });
+        for (const place of places) {
+            // Check for duplicate using googleMapsLink
+            const existing = db.findOne('places', { googleMapsLink: place.googleMapsLink });
+            if (!existing) {
+                db.insert('places', {
+                    jobId,
+                    userId,
+                    keyword,
+                    ...place
+                });
+            }
         }
+        logger.info('Places saved to database', { jobId, keyword, count: places.length });
+    } catch (error) {
+        logger.error('Failed to save places to database', { error: error.message, jobId, keyword });
     }
 }
 
@@ -66,6 +66,8 @@ async function countPlacesFromLocalFiles(jobId) {
 }
 
 module.exports = {
-    savePlacesToMongoDB,
-    countPlacesFromLocalFiles
+    savePlacesToDB,
+    countPlacesFromLocalFiles,
+    // Keep old names for compatibility
+    savePlacesToMongoDB: savePlacesToDB
 };
