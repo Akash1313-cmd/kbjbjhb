@@ -14,9 +14,6 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const socketIO = require('socket.io');
-const MemoryMonitor = require('./utils/memory-monitor');
-const { getProductionManager } = require('./utils/production-manager');
-const aggressiveCleaner = require('./utils/aggressive-memory-cleaner');
 const { processKeywords } = require('./scraper-pro');
 const { requireApiKey, apiLimiter, scrapeLimiter, requireAuth, optionalAuth, requireUserApiKey, requireAuthOrApiKey } = require('./middleware/auth');
 const { validateScrapeRequest, validateConfig, sanitizeConfig, validatePagination, sanitizeKeywords } = require('./utils/validation');
@@ -1193,24 +1190,28 @@ app.get('/api/health', (req, res) => {
 
 // GET /api/memory - Memory usage status
 app.get('/api/memory', (req, res) => {
-    const monitor = new MemoryMonitor();
-    const stats = monitor.getMemoryStats();
-    const suggestions = monitor.getOptimizationSuggestions();
+    const memUsage = process.memoryUsage();
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedMem = totalMem - freeMem;
+    
+    const processHeapMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+    const processRssMB = Math.round(memUsage.rss / 1024 / 1024);
+    const processPercent = (memUsage.heapUsed / totalMem) * 100;
     
     res.json({
         status: 'ok',
         memory: {
-            process: stats.processReadable,
-            system: stats.systemReadable,
-            processPercent: `${stats.processPercent.toFixed(1)}%`
+            process: `${processHeapMB}MB`,
+            system: `${Math.round(usedMem / 1024 / 1024)}MB / ${Math.round(totalMem / 1024 / 1024)}MB`,
+            processPercent: `${processPercent.toFixed(1)}%`
         },
         workers: {
             maxLinkWorkers: process.env.MAX_LINK_WORKERS || '1',
             maxDataWorkers: process.env.MAX_DATA_WORKERS || '1',
             activeJobs: activeJobsMap.size
         },
-        optimizations: suggestions,
-        recommendation: stats.processPercent > 50 
+        recommendation: processPercent > 50 
             ? 'High memory usage detected. Consider reducing workers.' 
             : 'Memory usage is within normal limits.'
     });
@@ -1218,20 +1219,24 @@ app.get('/api/memory', (req, res) => {
 
 // GET /api/production/metrics - Production performance metrics
 app.get('/api/production/metrics', requireAuth, (req, res) => {
-    const productionManager = getProductionManager();
-    const metrics = productionManager.getMetrics();
+    const memUsage = process.memoryUsage();
+    const uptime = process.uptime();
     
     res.json({
         status: 'ok',
         environment: process.env.NODE_ENV || 'development',
-        metrics: metrics,
+        metrics: {
+            uptime: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
+            memoryUsage: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
+            activeJobs: activeJobsMap.size,
+            totalJobs: stats.totalJobs
+        },
         configuration: {
             memoryLimit: `${process.env.MEMORY_LIMIT_MB || 2048}MB`,
             cleanupInterval: process.env.CLEANUP_INTERVAL || 20,
             batchSize: process.env.BATCH_SIZE || 50,
             streamResults: process.env.STREAM_RESULTS === 'true',
-            headlessMode: process.env.USE_HEADLESS === 'true' || process.env.PUPPETEER_HEADLESS === 'true',
-            aggressiveClean: process.env.AGGRESSIVE_MEMORY_CLEAN === 'true'
+            headlessMode: process.env.USE_HEADLESS === 'true' || process.env.PUPPETEER_HEADLESS === 'true'
         }
     });
 });
@@ -1241,10 +1246,8 @@ app.get('/api/memory/test', (req, res) => {
     const beforeGC = process.memoryUsage();
     const beforeMB = Math.round(beforeGC.heapUsed / 1024 / 1024);
     
-    // Force aggressive cleanup
-    if (process.env.AGGRESSIVE_MEMORY_CLEAN === 'true') {
-        aggressiveCleaner.forceClean();
-    } else if (global.gc) {
+    // Force garbage collection if available
+    if (global.gc) {
         global.gc();
     }
     
@@ -1256,7 +1259,6 @@ app.get('/api/memory/test', (req, res) => {
         
         res.json({
             status: 'ok',
-            aggressiveMode: process.env.AGGRESSIVE_MEMORY_CLEAN === 'true',
             before: {
                 heap: `${beforeMB}MB`,
                 rss: `${Math.round(beforeGC.rss / 1024 / 1024)}MB`
@@ -1276,40 +1278,33 @@ app.get('/api/memory/test', (req, res) => {
     }, 500);
 });
 
-// POST /api/memory/clean - Force aggressive memory cleanup
+// POST /api/memory/clean - Force memory cleanup
 app.post('/api/memory/clean', requireAuth, (req, res) => {
     const { level = 'normal' } = req.body;
     
     try {
-        if (level === 'aggressive') {
-            // Super aggressive cleaning
-            aggressiveCleaner.forceClean();
-            console.log('🔥 Forced aggressive memory cleanup');
-        } else if (level === 'emergency') {
-            // Emergency wipe - clears everything
-            aggressiveCleaner.emergencyWipe();
-            console.log('🚨 Emergency memory wipe executed');
-        } else {
-            // Normal cleanup
-            if (global.gc) {
-                global.gc();
-                console.log('🧹 Normal memory cleanup');
-            }
+        const beforeMem = process.memoryUsage();
+        
+        // Normal cleanup using built-in GC
+        if (global.gc) {
+            global.gc();
+            console.log('🧹 Memory cleanup triggered');
         }
         
-        // Get stats after cleanup
-        const stats = aggressiveCleaner.getMemoryStats();
-        
-        res.json({
-            status: 'success',
-            message: `Memory cleanup completed (${level})`,
-            memory: {
-                heap: `${stats.heap}MB`,
-                rss: `${stats.rss}MB`,
-                heapPercent: `${stats.heapPercent}%`,
-                systemFree: `${stats.systemFree}MB`
-            }
-        });
+        setTimeout(() => {
+            const afterMem = process.memoryUsage();
+            const freedMB = Math.round((beforeMem.heapUsed - afterMem.heapUsed) / 1024 / 1024);
+            
+            res.json({
+                status: 'success',
+                message: `Memory cleanup completed (${level})`,
+                memory: {
+                    heap: `${Math.round(afterMem.heapUsed / 1024 / 1024)}MB`,
+                    rss: `${Math.round(afterMem.rss / 1024 / 1024)}MB`,
+                    freed: `${freedMB}MB`
+                }
+            });
+        }, 500);
     } catch (error) {
         res.status(500).json({
             status: 'error',
