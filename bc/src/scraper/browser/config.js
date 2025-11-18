@@ -2,7 +2,7 @@
  * Browser configuration utilities
  */
 
-const { BASE_CHROME_ARGS } = require('./browser-constants');
+const { BASE_CHROME_ARGS } = require('../config/browser-constants');
 const { getDeviceScreenDimensions } = require('../utils/helpers');
 
 /**
