@@ -144,6 +144,18 @@ storage.init().catch(err => logger.error('Storage init failed', { error: err.mes
 // Start scheduler
 scheduler.start();
 
+// Daily database backup (runs once per day at midnight)
+setInterval(() => {
+    const path = require('path');
+    const backupDir = path.join(__dirname, '..', 'database', 'backups');
+    const backupPath = db.backup(backupDir);
+    if (backupPath) {
+        logger.info('Database backup created', { backupPath });
+    } else {
+        logger.error('Database backup failed');
+    }
+}, 24 * 60 * 60 * 1000); // 24 hours
+
 // Memory cleanup - Auto-delete old jobs and results (cleanup) - OPTIMIZED FOR MEMORY
 setInterval(() => {
     const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);  
