@@ -44,9 +44,81 @@ const io = socketIO(server, { cors: { origin: process.env.CORS_ORIGIN || '*' } }
 // Using 'loopback' to trust only local proxies
 app.set('trust proxy', 'loopback');
 
-// Import file operations utilities
-const { atomicWriteJSON, cleanupOldTempFiles } = require('./utils/file-operations');
-const { convertToCSV } = require('./utils/data-converter');
+// ==========================================
+// 🔒 ATOMIC FILE WRITE UTILITY
+// ==========================================
+/**
+ * Atomically write data to a file to prevent corruption
+ * @param {string} filePath - Target file path
+ * @param {any} data - Data to write (will be JSON stringified)
+ */
+function atomicWriteJSON(filePath, data) {
+    const tmpPath = `${filePath}.${Date.now()}.tmp`;
+    try {
+        // Write to temporary file
+        const jsonString = JSON.stringify(data, null, 2);
+        fs.writeFileSync(tmpPath, jsonString, 'utf8');
+        
+        // Ensure data is written to disk (important for crash safety)
+        const fd = fs.openSync(tmpPath, 'r+');
+        fs.fsyncSync(fd);
+        fs.closeSync(fd);
+        
+        // Atomically rename temp file to target (this is atomic on all platforms)
+        fs.renameSync(tmpPath, filePath);
+        
+        return true;
+    } catch (err) {
+        // Clean up temp file if it exists
+        try {
+            if (fs.existsSync(tmpPath)) {
+                fs.unlinkSync(tmpPath);
+            }
+        } catch (cleanupErr) {
+            // Ignore cleanup errors
+        }
+        throw err;
+    }
+}
+
+/**
+ * Clean up old temporary files in results directory
+ * Removes .tmp files older than 1 hour
+ */
+function cleanupOldTempFiles() {
+    try {
+        const resultsDir = path.join(__dirname, '..', 'results');
+        if (!fs.existsSync(resultsDir)) return;
+        
+        const files = fs.readdirSync(resultsDir);
+        const now = Date.now();
+        let cleaned = 0;
+        
+        files.forEach(file => {
+            if (file.endsWith('.tmp')) {
+                const filePath = path.join(resultsDir, file);
+                try {
+                    const stats = fs.statSync(filePath);
+                    const age = now - stats.mtimeMs;
+                    
+                    // Remove files older than 1 hour
+                    if (age > 60 * 60 * 1000) {
+                        fs.unlinkSync(filePath);
+                        cleaned++;
+                    }
+                } catch (err) {
+                    // Ignore errors on individual files
+                }
+            }
+        });
+        
+        if (cleaned > 0) {
+            console.log(`🧹 Cleaned up ${cleaned} old temp file(s)`);
+        }
+    } catch (err) {
+        console.error('Error cleaning temp files:', err.message);
+    }
+}
 
 // Middleware
 app.use(cors({
@@ -74,15 +146,102 @@ try {
     config = { headless: false, parallelWorkers: 5, maxWorkers: 10 };
 }
 
-// Import MongoDB services
-const { saveJobToMongoDB, updateJobInMongoDB, loadRecentJobsFromMongoDB } = require('./services/job.service');
-const { savePlacesToMongoDB } = require('./services/mongodb.service');
+// In-memory data stores (Maps) - MUST BE BEFORE loadExistingResults
+const jobs = new Map();
+const results = new Map();
+const activeJobsMap = new Map();
 
-// Import shared job manager (global state)
-const { jobs, results, activeJobsMap, jobCancellationFlags, jobIntervals } = require('./utils/job-manager');
+// Track cancellation flags and intervals for each job
+const jobCancellationFlags = new Map(); // jobId -> boolean
+const jobIntervals = new Map(); // jobId -> intervalId
 
 // Initialize storage
 storage.init().catch(err => logger.error('Storage init failed', { error: err.message }));
+
+// MongoDB Helper Functions
+async function saveJobToMongoDB(jobData, userId) {
+    try {
+        const job = new Job({
+            jobId: jobData.jobId,
+            userId: userId,
+            keywords: jobData.keywords,
+            status: jobData.status,
+            config: jobData.config,
+            progress: jobData.progress,
+            totalPlaces: jobData.totalPlaces || 0,
+            startedAt: jobData.startedAt || new Date()
+        });
+        await job.save();
+        logger.info('Job saved to MongoDB', { jobId: jobData.jobId });
+    } catch (error) {
+        logger.error('Failed to save job to MongoDB', { error: error.message, jobId: jobData.jobId });
+    }
+}
+
+async function updateJobInMongoDB(jobId, updates) {
+    try {
+        await Job.findOneAndUpdate({ jobId }, updates);
+    } catch (error) {
+        logger.error('Failed to update job in MongoDB', { error: error.message, jobId });
+    }
+}
+
+async function savePlacesToMongoDB(jobId, userId, keyword, places) {
+    try {
+        const placeDocs = places.map(place => ({
+            jobId,
+            userId,
+            keyword,
+            ...place
+        }));
+        
+        // Use insertMany with ordered: false to continue on duplicates
+        await Place.insertMany(placeDocs, { ordered: false });
+        logger.info('Places saved to MongoDB', { jobId, keyword, count: places.length });
+    } catch (error) {
+        // Ignore duplicate key errors (E11000)
+        if (error.code !== 11000) {
+            logger.error('Failed to save places to MongoDB', { error: error.message, jobId, keyword });
+        }
+    }
+}
+
+// Load recent jobs from MongoDB into memory on startup
+async function loadRecentJobsFromMongoDB() {
+    try {
+        // logger.info('📦 Loading recent jobs from MongoDB...'); // Hidden
+        
+        // Load jobs from last 7 days
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        const recentJobs = await Job.find({
+            createdAt: { $gte: sevenDaysAgo }
+        })
+        .sort({ createdAt: -1 })
+        .limit(50);
+        
+        if (recentJobs.length === 0) {
+            // logger.info('📦 No recent jobs found in MongoDB'); // Hidden
+            return;
+        }
+        
+        // logger.info(`📦 Found ${recentJobs.length} recent jobs in MongoDB`); // Hidden
+        
+        // Load jobs into memory (metadata only - results come from local files)
+        for (const dbJob of recentJobs) {
+            const jobObj = dbJob.toObject();
+            jobs.set(jobObj.jobId, jobObj);
+            
+            // ✅ DO NOT load results from MongoDB on startup
+            // Results will be loaded from LOCAL FILES when requested via API
+            // This ensures local files are the source of truth
+            // logger.info(`   ✅ Loaded job metadata: ${jobObj.jobId} (status: ${jobObj.status})`); // Hidden
+        }
+        
+        // logger.info(`✅ Loaded ${recentJobs.length} jobs from MongoDB into memory`); // Hidden
+    } catch (error) {
+        logger.error('Failed to load jobs from MongoDB', { error: error.message });
+    }
+}
 
 // Start scheduler
 scheduler.start();
@@ -1374,36 +1533,628 @@ app.get('/api/stats', optionalAuth, async (req, res) => {
 /**
  * WebSocket for real-time progress
  */
-// Import WebSocket handler
-const { initializeWebSocket } = require('./websocket/socket-handler');
-initializeWebSocket(io);
+io.on('connection', (socket) => {
+    console.log('Client connected:', socket.id);
 
-// Import scraper service
-const { updateJobProgress: updateJobProgressService, startScrapingJob: startScrapingJobService } = require('./services/scraper.service');
+    socket.on('subscribe', (jobId) => {
+        socket.join(jobId);
+        const roomSize = io.sockets.adapter.rooms.get(jobId)?.size || 0;
+        console.log(`✅ Client ${socket.id} subscribed to job: ${jobId} (Room now has ${roomSize} client(s))`);
+        
+        // Send any existing results immediately upon subscription
+        if (results.has(jobId)) {
+            const jobResults = results.get(jobId);
+            Object.keys(jobResults).forEach(keyword => {
+                socket.emit('keyword_results', {
+                    jobId,
+                    keyword,
+                    results: jobResults[keyword],
+                    count: jobResults[keyword]?.length || 0,
+                    isPartial: false
+                });
+                console.log(`   📤 Sent existing results for "${keyword}" to newly subscribed client`);
+            });
+        }
+    });
 
-// Wrapper functions to maintain compatibility
-const updateJobProgress = (jobId, current, total, meta = {}) => {
-    return updateJobProgressService(jobId, current, total, meta, io);
-};
+    socket.on('unsubscribe', (jobId) => {
+        socket.leave(jobId);
+        console.log(`Client unsubscribed from job: ${jobId}`);
+    });
 
-const startScrapingJob = async (jobId, keywords, jobConfig) => {
-    return await startScrapingJobService(jobId, keywords, jobConfig, config, io, triggerWebhooks);
-};
-
-// Import webhook service
-const { triggerWebhooks: triggerWebhooksService, initWebhooks } = require('./services/webhook.service');
-const triggerWebhooks = triggerWebhooksService;
-
-// Initialize webhooks Map
-const webhooks = new Map();
-initWebhooks(webhooks);
+    socket.on('disconnect', () => {
+        console.log('Client disconnected:', socket.id);
+    });
+});
 
 /**
- * 1. SCRAPING ENDPOINTS
+ * Helper Functions
  */
 
-// POST /api/scrape - Start multi-keyword scraping (JWT or API Key Auth)
+function updateJobProgress(jobId, current, total, meta = {}) {
+    const job = jobs.get(jobId);
+    if (!job) return;
+    
+    const totalKeywords = typeof total === 'number'
+        ? total
+        : job.progress?.total || job.keywords?.length || 0;
+    const normalizedCurrent = Math.max(0, Math.min(typeof current === 'number' ? current : 0, totalKeywords));
+    const percentage = totalKeywords === 0
+        ? 0
+        : Math.min(100, Math.round((normalizedCurrent / totalKeywords) * 100));
+    
+    // Calculate total places scraped
+    const jobResults = results.get(jobId);
+    const placesScraped = jobResults 
+        ? Object.values(jobResults).reduce((sum, places) => 
+            sum + (Array.isArray(places) ? places.length : 0), 0)
+        : 0;
 
+    job.progress = {
+        ...(job.progress || {}),
+        current: normalizedCurrent,
+        keywordsCompleted: Math.floor(normalizedCurrent),  // Should be integer count of completed keywords
+        totalKeywords: totalKeywords,
+        total: totalKeywords,
+        percentage,
+        currentKeyword: meta.keyword ?? job.progress?.currentKeyword ?? null,
+        lastKeyword: meta.keyword ?? job.progress?.lastKeyword ?? null,
+        placesScraped,
+        linksFound: meta.linksFound ?? job.progress?.linksFound ?? 0,
+        extractedCount: meta.extractedCount ?? job.progress?.extractedCount ?? 0,
+        urlProgress: meta.linksFound > 0 ? `${meta.extractedCount || 0}/${meta.linksFound}` : '0/0',
+        lastUpdated: new Date().toISOString()
+    };
+    
+    if (typeof meta.resultsCount === 'number') {
+        job.progress.lastResultsCount = meta.resultsCount;
+    }
+    
+    if (meta.error) {
+        job.progress.error = meta.error;
+    } else if (job.progress && job.progress.error) {
+        delete job.progress.error;
+    }
+    
+    jobs.set(jobId, job);
+    
+    io.to(jobId).emit('job_progress', {
+        jobId,
+        progress: job.progress,
+        error: meta.error || null
+    });
+}
+
+async function startScrapingJob(jobId, keywords, jobConfig) {
+    const job = jobs.get(jobId);
+    job.status = 'in_progress';
+    job.startTime = new Date().toISOString();
+    job.progress = job.progress || {
+        current: 0,
+        keywordsCompleted: 0,
+        total: keywords.length,
+        totalKeywords: keywords.length,
+        percentage: 0,
+        placesScraped: 0
+    };
+    jobs.set(jobId, job);
+    activeJobsMap.set(jobId, job);
+    
+    // Initialize cancellation flag as false
+    jobCancellationFlags.set(jobId, false);
+    
+    updateJobProgress(jobId, 0, keywords.length);
+    
+    // Start live polling for partial results (every 3 seconds)
+    const livePollingInterval = setInterval(async () => {
+        // Check if job is cancelled
+        if (jobCancellationFlags.get(jobId)) {
+            clearInterval(livePollingInterval);
+            jobIntervals.delete(jobId);
+            return;
+        }
+        if (jobs.get(jobId)?.status !== 'in_progress') {
+            clearInterval(livePollingInterval);
+            return;
+        }
+        
+        // Check all keywords for partial updates from local files
+        for (const keyword of keywords) {
+            try {
+                let keywordResults = null;
+                
+                // Read from local files only
+                const resultsDir = config.outputDir || path.join(__dirname, '..', 'results');
+                const sanitized = keyword.replace(/[\\/*?:"<>|]/g, '').replace(/\s+/g, '_').substring(0, 50);
+                const tempFilePath = path.join(resultsDir, `${sanitized}.temp.json`);
+                const finalFilePath = path.join(resultsDir, `${sanitized}.json`);
+                
+                // Check temp file first, then final file
+                if (fs.existsSync(tempFilePath)) {
+                    keywordResults = JSON.parse(fs.readFileSync(tempFilePath, 'utf8'));
+                } else if (fs.existsSync(finalFilePath)) {
+                    keywordResults = JSON.parse(fs.readFileSync(finalFilePath, 'utf8'));
+                }
+                
+                // Emit if we have new data
+                if (keywordResults && keywordResults.length > 0) {
+                    const currentResults = results.get(jobId) || {};
+                    const previousCount = currentResults[keyword]?.length || 0;
+                    
+                    // Only emit if there's new data
+                    if (keywordResults.length > previousCount) {
+                        currentResults[keyword] = keywordResults;
+                        results.set(jobId, currentResults);
+                        
+                        // Emit partial results
+                        io.to(jobId).emit('keyword_results', {
+                            jobId,
+                            keyword,
+                            results: keywordResults,
+                            count: keywordResults.length,
+                            isPartial: true,
+                            totalKeywords: keywords.length
+                        });
+                        
+                        // Update places count
+                        const job = jobs.get(jobId);
+                        if (job) {
+                            const totalPlaces = Object.values(currentResults).reduce((sum, places) =>
+                                sum + (Array.isArray(places) ? places.length : 0), 0
+                            );
+
+                            // Update places count only, keep existing progress from callbacks
+                            job.progress = {
+                                ...(job.progress || {}),
+                                placesScraped: totalPlaces,
+                                lastUpdated: new Date().toISOString()
+                            };
+
+                            jobs.set(jobId, job);
+
+                            console.log(`📊 Live Polling: Updated places count to ${totalPlaces} for "${keyword}" (Source: Local File)`);
+                        }
+                    }
+                }
+            } catch (err) {
+                // Ignore errors during live polling
+            }
+        }
+    }, 3000); // Poll every 3 seconds for real-time updates
+    
+    // Store interval for cleanup
+    jobIntervals.set(jobId, livePollingInterval);
+    
+    try {
+        // Initialize results storage for this job
+        results.set(jobId, {});
+        
+        // Use normal scraper
+        logger.info('Using normal scraper', { jobId, workers: jobConfig?.workers, linkWorkers: jobConfig?.linkWorkers });
+        const jobResults = await processKeywords(
+            keywords,
+            jobConfig?.workers,
+            jobConfig?.linkWorkers,
+            {
+                // Check cancellation before processing each keyword
+                shouldCancel: () => jobCancellationFlags.get(jobId) === true,
+                // NEW: Handle real-time progress during keyword processing
+                onProgress: ({ keyword, index, total, phase, progress, linksFound, extractedCount }) => {
+                    const job = jobs.get(jobId);
+                    if (!job) return;
+
+                    // Calculate overall progress:
+                    // index = Number of fully completed keywords
+                    // progress = Current keyword progress (0 to 1)
+                    const completedKeywords = index || 0;  // Already the count of completed keywords
+                    const currentKeywordProgress = Math.min(1, Math.max(0, progress || 0));  // Clamp between 0 and 1
+                    const overallProgress = completedKeywords + currentKeywordProgress;
+                    const percentage = Math.min(100, Math.round((overallProgress / total) * 100));
+
+                    // Get current places count from results
+                    const jobResults = results.get(jobId) || {};
+                    let placesScraped = Object.values(jobResults).reduce((sum, places) =>
+                        sum + (Array.isArray(places) ? places.length : 0), 0
+                    );
+                    
+                    // Add extracted count from current keyword if provided
+                    if (extractedCount && extractedCount > 0) {
+                        // For current keyword being processed
+                        const currentKeywordPlaces = jobResults[keyword]?.length || 0;
+                        placesScraped = placesScraped - currentKeywordPlaces + extractedCount;
+                    }
+
+                    // Update job progress with real data
+                    job.progress = {
+                        ...(job.progress || {}),
+                        current: overallProgress,
+                        keywordsCompleted: completedKeywords,  // This is now the actual count of completed keywords!
+                        totalKeywords: total,
+                        total: total,
+                        percentage,
+                        currentKeyword: keyword,
+                        currentPhase: phase,  // 'extracting_links' or 'extracting_data'
+                        placesScraped: extractedCount || placesScraped,  // Use extractedCount (actual places) if provided
+                        linksFound: linksFound || 0,  // Total URLs found for current keyword
+                        extractedCount: extractedCount || 0,  // Places extracted so far (not URLs!)
+                        lastUpdated: new Date().toISOString()
+                    };
+
+                    jobs.set(jobId, job);
+
+                    // Emit real-time progress with proper URL count
+                    io.to(jobId).emit('job_progress', {
+                        jobId,
+                        progress: {
+                            ...job.progress,
+                            urlProgress: linksFound > 0 ? `${extractedCount || 0}/${linksFound}` : '0/0'
+                        }
+                    });
+
+                    console.log(`📊 Progress: "${keyword}" [${phase}] - URLs: ${extractedCount || 0}/${linksFound || 0}, Places: ${placesScraped}, Overall: ${percentage}%`);
+                },
+                
+                // 🔥 NEW: Handle partial results (every 10 places)
+                onPartialResults: async ({ keyword, count }) => {
+                    try {
+                        console.log(`\n📦 onPartialResults: "${keyword}" - ${count} places (partial update). Emitting temp_file_updated event.`);
+                        
+                        // Emit an event to notify the frontend that the temporary file has been updated.
+                        // The frontend will then be responsible for fetching the updated results.
+                        io.to(jobId).emit('temp_file_updated', {
+                            jobId,
+                            keyword,
+                            count
+                        });
+                        
+                        console.log(`   📡 Emitted temp_file_updated for "${keyword}"`);
+                        
+                        // Optionally, update the job progress with the new count of scraped places.
+                        const job = jobs.get(jobId);
+                        if (job) {
+                            const jobMetadata = results.get(jobId);
+                            if (jobMetadata && jobMetadata._metadata) {
+                                jobMetadata._metadata.keywords[keyword] = count;
+                                const totalPlaces = Object.values(jobMetadata._metadata.keywords).reduce((sum, c) => sum + c, 0);
+                                job.progress = {
+                                    ...(job.progress || {}),
+                                    placesScraped: totalPlaces,
+                                    lastUpdated: new Date().toISOString()
+                                };
+                                jobs.set(jobId, job);
+                            }
+                        }
+                    } catch (err) {
+                        console.error(`❌ Error processing partial results for "${keyword}":`, err.message);
+                    }
+                },
+                
+                onKeywordComplete: ({ keyword, index, total, resultsCount, error, results: keywordResults }) => {
+                    // index is the completed keyword index (0-based), so completed count is index+1
+                    const completedCount = index + 1;
+
+                    console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+                    console.log(`🔔 onKeywordComplete: "${keyword}"`);
+                    console.log(`   ⏱️  Index: ${index} → Completed Count: ${completedCount}/${total}`);
+                    console.log(`   📊 Places Found: ${resultsCount}`);
+                    console.log(`   📦 Results data received: ${keywordResults ? 'YES ✅' : 'NO (fallback to file)'}`);
+                    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+                    
+                    // ✅ FIX: DO NOT WRITE FILES HERE - scraper-pro.js handles all file writing
+                    try {
+                        let resultsData = null;
+                        
+                        // Option 1: Use results passed directly from scraper (PREFERRED)
+                        if (keywordResults && Array.isArray(keywordResults)) {
+                            resultsData = keywordResults;
+                            console.log(`✅ Using results data from scraper (${resultsData.length} places)`);
+                        }
+                        // Option 2: Fallback to reading file (BACKWARD COMPATIBILITY)
+                        else {
+                            const resultsFilePath = path.join(
+                                config.outputDir || path.join(__dirname, '..', 'results'),
+                                keyword.replace(/[\\/*?:"<>|]/g, '').replace(/\s+/g, '_').substring(0, 50) + '.json'
+                            );
+                            
+                            console.log(`📂 Looking for results file: ${resultsFilePath}`);
+                            console.log(`   File exists: ${fs.existsSync(resultsFilePath)}`);
+                            
+                            if (fs.existsSync(resultsFilePath)) {
+                                resultsData = JSON.parse(fs.readFileSync(resultsFilePath, 'utf8'));
+                                console.log(`✅ Loaded results from file (${resultsData.length} places)`);
+                            } else {
+                                console.log(`⚠️ Results file not found - data may be lost!`);
+                            }
+                        }
+                        
+                        // LOCAL FILES ONLY: Store metadata in memory for progress tracking
+                        if (resultsData && Array.isArray(resultsData) && resultsData.length > 0) {
+                            // ✅ LOCAL FILES as PRIMARY storage (saved by scraper-pro.js)
+                            // MongoDB is disabled - results loaded from local files when needed
+                            console.log(`💾 Local Files: ${resultsData.length} places for "${keyword}" (saved by scraper)`);
+                            
+                            // MEMORY OPTIMIZATION: Only store metadata, not full data
+                            if (!results.has(jobId)) {
+                                results.set(jobId, {
+                                    _metadata: {
+                                        keywords: {},
+                                        totalPlaces: 0,
+                                        memoryOptimized: true
+                                    }
+                                });
+                            }
+                            
+                            const jobMetadata = results.get(jobId);
+                            if (jobMetadata && jobMetadata._metadata) {
+                                jobMetadata._metadata.keywords[keyword] = resultsData.length;
+                                jobMetadata._metadata.totalPlaces = Object.values(jobMetadata._metadata.keywords)
+                                    .reduce((sum, count) => sum + count, 0);
+                                
+                                console.log(`💡 Memory optimized: Only metadata stored`);
+                                console.log(`   Keywords completed: ${Object.keys(jobMetadata._metadata.keywords).length}/${total}`);
+                                console.log(`   Total places: ${jobMetadata._metadata.totalPlaces}`);
+                                console.log(`   Memory saved: ~${(resultsData.length * 1024 / 1024).toFixed(2)}MB per keyword`);
+                            }
+                            
+                            // Emit live results via WebSocket (stream, don't store)
+                            io.to(jobId).emit('keyword_results', {
+                                jobId,
+                                keyword,
+                                results: resultsData,  // Send data but don't store in memory
+                                count: resultsData.length,
+                                isPartial: false,
+                                completedIndex: completedCount,
+                                totalKeywords: total
+                            });
+                            console.log(`📡 Emitted keyword_results for "${keyword}" (COMPLETED) via WebSocket`);
+                        } else {
+                            console.log(`⚠️ No results data available for "${keyword}" - skipping save`);
+                        }
+                    } catch (err) {
+                        console.error(`❌ Error processing results for "${keyword}":`, err);
+                    }
+                    
+                    // Update progress with completedCount (not index)
+                    updateJobProgress(jobId, completedCount, total, { keyword, resultsCount, error });
+                }
+            }
+        );
+        
+        // Final results summary
+        console.log(`\n💾 Final results summary for job ${jobId}`);
+        
+        // Check if we're using memory-optimized approach
+        const jobMetadata = results.get(jobId);
+        let totalPlaces = 0;
+        
+        if (jobMetadata && jobMetadata._metadata && jobMetadata._metadata.memoryOptimized) {
+            // Memory optimized - data already in MongoDB
+            totalPlaces = jobMetadata._metadata.totalPlaces;
+            console.log(`   ✅ Memory optimized mode: ${Object.keys(jobMetadata._metadata.keywords).length} keywords`);
+            console.log(`   💾 All data in MongoDB (not in memory)`);
+            console.log(`   📊 Total places: ${totalPlaces}`);
+            console.log(`   💡 Memory saved: ~${((totalPlaces * 1024) / 1024 / 1024).toFixed(2)}GB`);
+        } else if (jobMetadata) {
+            // Fallback: Old approach (if memory optimization wasn't used)
+            totalPlaces = Object.values(jobMetadata).reduce((sum, places) => 
+                sum + (Array.isArray(places) ? places.length : 0), 0);
+            console.log(`   Keywords in results: ${Object.keys(jobMetadata).join(', ')}`);
+            console.log(`   Total keywords: ${Object.keys(jobMetadata).length}`);
+            Object.keys(jobMetadata).forEach(kw => {
+                console.log(`     - "${kw}": ${jobMetadata[kw]?.length || 0} places`);
+            });
+            console.log(`   ⚠️ Using old approach - all data in memory`);
+        } else {
+            console.log(`   ⚠️ No results found in memory`);
+        }
+        
+        // Don't accumulate stats globally - let the stats API calculate from jobs
+        console.log(`✅ Job ${jobId} completed with ${totalPlaces} total places`);
+        
+        // Clear live polling interval
+        clearInterval(livePollingInterval);
+        
+        // Check if job was cancelled during execution
+        if (jobCancellationFlags.get(jobId)) {
+            job.status = 'cancelled';
+            job.completedAt = new Date().toISOString();
+            logger.info('Job cancelled during execution', { jobId, totalPlaces });
+        } else {
+            job.status = 'completed';
+            job.completedAt = new Date().toISOString();
+            job.duration = `${((Date.now() - new Date(job.startTime)) / 60000).toFixed(1)} min`;
+            logger.info('Job completed', { jobId, totalPlaces });
+        }
+        
+        job.totalPlaces = totalPlaces;
+        job.placesCount = totalPlaces; // Also set placesCount for consistency
+        jobs.set(jobId, job);
+        activeJobsMap.delete(jobId);
+        
+        // Clear results from memory after completion to prevent stale data
+        // ✅ FIX: Increased timeout to 5 minutes (300000ms) to prevent premature data clearing
+        setTimeout(() => {
+            if (results.has(jobId)) {
+                console.log(`🧹 Clearing job results from memory: ${jobId}`);
+                results.delete(jobId);
+            }
+        }, 300000); // Clear after 5 minutes to allow proper data retrieval
+        updateJobProgress(jobId, keywords.length, keywords.length);
+        
+        // Cleanup cancellation tracking
+        jobCancellationFlags.delete(jobId);
+        
+        // Clear any intervals
+        if (jobIntervals.has(jobId)) {
+            clearInterval(jobIntervals.get(jobId));
+            jobIntervals.delete(jobId);
+        }
+        
+        // Update job in MongoDB
+        updateJobInMongoDB(jobId, {
+            status: job.status,
+            completedAt: new Date(),
+            totalPlaces: totalPlaces,
+            placesCount: totalPlaces,
+            progress: job.progress
+        });
+        
+        // Emit appropriate event
+        if (job.status === 'cancelled') {
+            io.to(jobId).emit('job_cancelled', {
+                jobId,
+                message: 'Job was cancelled',
+                totalPlaces
+            });
+        } else {
+            io.to(jobId).emit('job_completed', {
+                jobId,
+                status: 'completed',
+                totalPlaces
+            });
+        }
+        
+        // Trigger webhooks
+        await triggerWebhooks(jobId, 'job_completed', {
+            jobId,
+            status: 'completed',
+            totalPlaces,
+            completedAt: job.completedAt
+        });
+        
+    } catch (error) {
+        // Clear live polling interval on error
+        clearInterval(livePollingInterval);
+        
+        // Check if error was due to cancellation
+        if (jobCancellationFlags.get(jobId)) {
+            job.status = 'cancelled';
+            job.completedAt = new Date().toISOString();
+            logger.info('Job cancelled (caught in error handler)', { jobId });
+            
+            io.to(jobId).emit('job_cancelled', {
+                jobId,
+                message: 'Job was cancelled'
+            });
+        } else {
+            logger.error('Job failed', { jobId, error: error.message });
+            job.status = 'failed';
+            job.error = error.message;
+            job.completedAt = new Date().toISOString();
+            
+            io.to(jobId).emit('job_failed', {
+                jobId,
+                error: error.message
+            });
+            
+            // Trigger webhooks for failures
+            await triggerWebhooks(jobId, 'job_failed', {
+                jobId,
+                status: 'failed',
+                error: error.message,
+                failedAt: new Date().toISOString()
+            });
+        }
+        
+        jobs.set(jobId, job);
+        activeJobsMap.delete(jobId);
+        
+        // Cleanup cancellation tracking
+        jobCancellationFlags.delete(jobId);
+        
+        // Clear any intervals
+        if (jobIntervals.has(jobId)) {
+            clearInterval(jobIntervals.get(jobId));
+            jobIntervals.delete(jobId);
+        }
+        
+        updateJobProgress(
+            jobId,
+            job.progress?.current ?? 0,
+            job.progress?.total ?? keywords.length,
+            { error: error.message }
+        );
+    }
+}
+
+/**
+ * Trigger webhooks for job events
+ */
+async function triggerWebhooks(jobId, event, data) {
+    try {
+        // Find all webhooks for this job
+        const jobWebhooks = Array.from(webhooks.values())
+            .filter(wh => wh.jobId === jobId && wh.events.includes(event));
+        
+        if (jobWebhooks.length === 0) {
+            return;
+        }
+        
+        // Use dynamic import for node-fetch (ESM module)
+        const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+        
+        // Send webhook to each registered URL
+        for (const webhook of jobWebhooks) {
+            try {
+                const response = await fetch(webhook.url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        event,
+                        timestamp: new Date().toISOString(),
+                        ...data
+                    }),
+                    timeout: 5000
+                });
+                
+                if (response.ok) {
+                    logger.info('Webhook triggered successfully', { 
+                        webhookId: webhook.webhookId,
+                        jobId,
+                        event,
+                        url: webhook.url 
+                    });
+                } else {
+                    logger.warn('Webhook request failed', { 
+                        webhookId: webhook.webhookId,
+                        status: response.status,
+                        url: webhook.url
+                    });
+                }
+            } catch (error) {
+                logger.error('Webhook trigger error', { 
+                    webhookId: webhook.webhookId,
+                    error: error.message,
+                    url: webhook.url
+                });
+            }
+        }
+    } catch (error) {
+        logger.error('Webhook system error', { error: error.message });
+    }
+}
+
+function convertToCSV(data) {
+    // Simple CSV converter
+    const headers = ['Name', 'Phone', 'Rating', 'Reviews', 'Category', 'Address', 'Website'];
+    const rows = [];
+    
+    for (const [keyword, places] of Object.entries(data)) {
+        for (const place of places) {
+            rows.push([
+                place.name,
+                place.phone,
+                place.rating,
+                place.reviews,
+                place.category,
+                place.address,
+                place.website
+            ].map(v => `"${v}"`).join(','));
+        }
+    }
+    
+    return [headers.join(','), ...rows].join('\n');
+}
 
 /**
  * MISSING APIs - Queue Management
@@ -2237,6 +2988,7 @@ app.get('/api/logs/:jobId/html', requireAuth, async (req, res) => {
 
 // POST /api/alerts - Set up job completion alerts
 const alerts = new Map();
+const webhooks = new Map();
 
 app.post('/api/alerts', requireAuthOrApiKey, async (req, res) => {
     try {
