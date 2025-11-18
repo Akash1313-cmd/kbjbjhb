@@ -833,6 +833,62 @@ app.post('/api/jobs/:id/cancel', requireAuthOrApiKey, async (req, res) => {
     }
 });
 
+// GET /api/jobs/:jobId/stream - Server-Sent Events (SSE) for real-time job updates
+app.get('/api/jobs/:jobId/stream', optionalAuth, (req, res) => {
+    const jobId = req.params.jobId;
+    
+    // Check if job exists
+    let job = jobs.get(jobId);
+    if (!job) {
+        return res.status(404).json({ error: 'Job not found' });
+    }
+    
+    // Set headers for SSE
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    
+    // Send initial connection message
+    res.write(`data: ${JSON.stringify({ type: 'connected', jobId })}\n\n`);
+    
+    // Send current job status
+    const sendUpdate = () => {
+        const currentJob = jobs.get(jobId);
+        if (currentJob) {
+            res.write(`data: ${JSON.stringify({
+                type: 'job_progress',
+                jobId,
+                status: currentJob.status,
+                progress: currentJob.progress,
+                timestamp: new Date().toISOString()
+            })}\n\n`);
+            
+            // If job is completed or failed, close the connection
+            if (currentJob.status === 'completed' || currentJob.status === 'failed') {
+                res.write(`data: ${JSON.stringify({
+                    type: 'job_completed',
+                    jobId,
+                    status: currentJob.status,
+                    timestamp: new Date().toISOString()
+                })}\n\n`);
+                res.end();
+            }
+        }
+    };
+    
+    // Send updates every 2 seconds
+    const interval = setInterval(sendUpdate, 2000);
+    
+    // Send initial update
+    sendUpdate();
+    
+    // Clean up on client disconnect
+    req.on('close', () => {
+        clearInterval(interval);
+    });
+});
+
 // GET /api/results/:jobId - Get results (MongoDB fallback)
 app.get('/api/results/:jobId', optionalAuth, async (req, res) => {
     try {
