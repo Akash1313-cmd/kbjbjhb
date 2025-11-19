@@ -11,8 +11,13 @@ const User = require('../models/User');
 const logger = require('../utils/logger');
 const { requireAuth } = require('../middleware/auth');
 const { verifyIdToken } = require('../config/firebase-admin');
+const { validateEmail, validatePassword } = require('../utils/validators');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
+// Validate JWT_SECRET is set
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+    throw new Error('JWT_SECRET environment variable is required!');
+}
 const JWT_EXPIRE = process.env.JWT_EXPIRE || '7d';
 
 // Generate JWT Token
@@ -39,7 +44,22 @@ router.post('/signup', async (req, res) => {
       });
     }
 
-    // No password length restriction - user can set any password
+    // Validate email format
+    if (!validateEmail(email)) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: 'Invalid email format'
+      });
+    }
+
+    // Validate password strength
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.valid) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: passwordValidation.error
+      });
+    }
 
     // Check if user exists
     const existingUser = await User.findOne({ email: email.toLowerCase() });
@@ -348,7 +368,14 @@ router.post('/change-password', async (req, res) => {
       });
     }
 
-    // No password length restriction - user can set any password
+    // Validate new password strength
+    const passwordValidation = validatePassword(newPassword);
+    if (!passwordValidation.valid) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        message: passwordValidation.error
+      });
+    }
 
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = await User.findById(decoded.userId).select('+password');

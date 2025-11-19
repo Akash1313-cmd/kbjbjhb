@@ -7,29 +7,42 @@ const path = require('path');
 const logger = require('../../utils/logger');
 
 /**
- * Write JSON data to a file
+ * Write JSON data to a file asynchronously
  * @param {string} filePath - Target file path
  * @param {any} data - Data to write (will be JSON stringified)
  */
-function atomicWriteJSON(filePath, data) {
+async function atomicWriteJSON(filePath, data) {
+    const tmpPath = `${filePath}.${Date.now()}.tmp`;
     try {
         const jsonString = JSON.stringify(data, null, 2);
-        fs.writeFileSync(filePath, jsonString, 'utf8');
+        
+        // Use async operations
+        await fs.promises.writeFile(tmpPath, jsonString, 'utf8');
+        
+        // Atomic rename
+        await fs.promises.rename(tmpPath, filePath);
+        
         return true;
     } catch (err) {
+        // Cleanup
+        try {
+            await fs.promises.unlink(tmpPath);
+        } catch (cleanupErr) {
+            // Ignore cleanup errors
+        }
         throw err;
     }
 }
 
 /**
- * Save scraped data to JSON file
+ * Save scraped data to JSON file asynchronously
  * @param {Array} data - Data to save
  * @param {string} keyword - Keyword being scraped
  * @param {string} outputDir - Output directory path
  * @param {boolean} isComplete - Whether scraping is complete
  * @returns {Object} Object with jsonFile path
  */
-function saveToJSON(data, keyword, outputDir, isComplete = false) {
+async function saveToJSON(data, keyword, outputDir, isComplete = false) {
     // Check if local file saving is disabled
     const saveLocalFiles = process.env.SAVE_LOCAL_FILES !== 'false';
     if (!saveLocalFiles) {
@@ -45,7 +58,7 @@ function saveToJSON(data, keyword, outputDir, isComplete = false) {
     const finalFilename = path.join(outputDir, `${sanitized}.json`);
 
     try {
-        fs.writeFileSync(finalFilename, JSON.stringify(data, null, 2), 'utf8');
+        await fs.promises.writeFile(finalFilename, JSON.stringify(data, null, 2), 'utf8');
         if (isComplete) {
             logger.success(`Final results saved to ${finalFilename}`);
         }
