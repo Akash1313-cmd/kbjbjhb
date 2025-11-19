@@ -1,6 +1,6 @@
 /**
  * File Operations Utilities
- * Atomic file write and cleanup operations
+ * Simplified file operations
  */
 
 const fs = require('fs');
@@ -8,32 +8,26 @@ const path = require('path');
 const logger = require('./logger');
 
 /**
- * Atomically write data to a file to prevent corruption
+ * Write JSON data to a file asynchronously
  * @param {string} filePath - Target file path
  * @param {any} data - Data to write (will be JSON stringified)
  */
-function atomicWriteJSON(filePath, data) {
+async function atomicWriteJSON(filePath, data) {
     const tmpPath = `${filePath}.${Date.now()}.tmp`;
     try {
-        // Write to temporary file
         const jsonString = JSON.stringify(data, null, 2);
-        fs.writeFileSync(tmpPath, jsonString, 'utf8');
         
-        // Ensure data is written to disk (important for crash safety)
-        const fd = fs.openSync(tmpPath, 'r+');
-        fs.fsyncSync(fd);
-        fs.closeSync(fd);
+        // Use async operations
+        await fs.promises.writeFile(tmpPath, jsonString, 'utf8');
         
-        // Atomically rename temp file to target (this is atomic on all platforms)
-        fs.renameSync(tmpPath, filePath);
+        // Atomic rename
+        await fs.promises.rename(tmpPath, filePath);
         
         return true;
     } catch (err) {
-        // Clean up temp file if it exists
+        // Cleanup
         try {
-            if (fs.existsSync(tmpPath)) {
-                fs.unlinkSync(tmpPath);
-            }
+            await fs.promises.unlink(tmpPath);
         } catch (cleanupErr) {
             // Ignore cleanup errors
         }
@@ -45,32 +39,38 @@ function atomicWriteJSON(filePath, data) {
  * Clean up old temporary files in results directory
  * Removes .tmp files older than 1 hour
  */
-function cleanupOldTempFiles() {
+async function cleanupOldTempFiles() {
     try {
         const resultsDir = path.join(__dirname, '../../results');
-        if (!fs.existsSync(resultsDir)) return;
         
-        const files = fs.readdirSync(resultsDir);
+        // Check if directory exists
+        try {
+            await fs.promises.access(resultsDir);
+        } catch {
+            return; // Directory doesn't exist
+        }
+        
+        const files = await fs.promises.readdir(resultsDir);
         const now = Date.now();
         let cleaned = 0;
         
-        files.forEach(file => {
+        for (const file of files) {
             if (file.endsWith('.tmp')) {
                 const filePath = path.join(resultsDir, file);
                 try {
-                    const stats = fs.statSync(filePath);
+                    const stats = await fs.promises.stat(filePath);
                     const fileAge = now - stats.mtimeMs;
                     
                     // Delete files older than 1 hour
                     if (fileAge > 60 * 60 * 1000) {
-                        fs.unlinkSync(filePath);
+                        await fs.promises.unlink(filePath);
                         cleaned++;
                     }
                 } catch (err) {
                     // Ignore errors for individual files
                 }
             }
-        });
+        }
         
         if (cleaned > 0) {
             logger.info(`Cleaned up ${cleaned} old temporary files`);

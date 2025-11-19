@@ -2,7 +2,7 @@
  * CAPTCHA Detector - Detect and handle CAPTCHAs
  */
 
-const logger = require('../../utils/scraper-logger');
+const logger = require('../../utils/logger');
 
 class CaptchaDetector {
     constructor() {

@@ -1,11 +1,11 @@
 /**
- * Configuration loading utilities
+ * Configuration loading utilities - Simplified
  */
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const logger = require('../../utils/scraper-logger');
+const logger = require('../../utils/logger');
 const CONSTANTS = require('../../utils/constants');
 
 /**
@@ -56,7 +56,7 @@ function loadConfig() {
     const defaultConfig = {
         headless: false,
         scrollTimeout: CONSTANTS.MAX_SCROLL_IDLE_TIME_SECONDS * 1000,
-        parallelWorkers: 'auto',  // 'auto' or number
+        parallelWorkers: 'auto',
         maxWorkers: CONSTANTS.MAX_WORKERS,
         minWorkers: CONSTANTS.MIN_WORKERS,
         browserRestartInterval: CONSTANTS.BROWSER_RESTART_INTERVAL,
@@ -66,12 +66,13 @@ function loadConfig() {
         retryAttempts: CONSTANTS.DEFAULT_RETRY_ATTEMPTS,
         retryDelay: CONSTANTS.RETRY_BASE_DELAY,
         enableErrorLogging: true,
-        enableResume: true
+        enableResume: false
     };
 
     try {
-        if (fs.existsSync(path.join(__dirname, '../../../config/config.json'))) {
-            const userConfig = JSON.parse(fs.readFileSync(path.join(__dirname, '../../../config/config.json'), 'utf-8'));
+        const configPath = path.join(__dirname, '../../../config/config.json');
+        if (fs.existsSync(configPath)) {
+            const userConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
             
             // Handle auto workers
             if (userConfig.parallelWorkers === 'auto') {
@@ -79,12 +80,7 @@ function loadConfig() {
                 userConfig.parallelWorkers = Math.min(userConfig.maxWorkers || 4, Math.max(userConfig.minWorkers || 2, Math.floor(cpuCount / 2)));
             }
             
-            // Expand tilde in outputDir
-            if (userConfig.outputDir && userConfig.outputDir.startsWith('~')) {
-                userConfig.outputDir = userConfig.outputDir.replace('~', os.homedir());
-            }
-            
-            // Merge with browser config
+            // Merge with defaults
             const merged = { ...defaultConfig, ...userConfig };
             merged.parallelWorkers = BROWSER_CONFIG.workers.parallelWorkers || merged.parallelWorkers;
             merged.parallelPipeline = BROWSER_CONFIG.dualBrowserMode.enabled !== undefined ? BROWSER_CONFIG.dualBrowserMode.enabled : merged.parallelPipeline;
@@ -95,12 +91,7 @@ function loadConfig() {
         logger.warn('Failed to load config, using defaults', { error: error.message });
     }
     
-    // Merge defaults with browser config
-    const merged = { ...defaultConfig };
-    merged.parallelWorkers = BROWSER_CONFIG.workers.parallelWorkers || defaultConfig.parallelWorkers;
-    merged.parallelPipeline = BROWSER_CONFIG.dualBrowserMode.enabled;
-    
-    return merged;
+    return defaultConfig;
 }
 
 // Singleton instances exported
