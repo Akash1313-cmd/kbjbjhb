@@ -69,8 +69,36 @@ async function retryOperation(operation, context, maxAttempts = CONFIG.retryAtte
     }
 }
 
+/**
+ * Clear page data (cookies and cache)
+ * @param {Page} page - Puppeteer page object
+ */
+async function clearPageData(page) {
+    try {
+        const client = await page.target().createCDPSession();
+        await client.send('Network.clearBrowserCookies');
+        await client.send('Network.clearBrowserCache');
+    } catch (err) {
+        // Silently fail
+    }
+}
+
+/**
+ * Atomic write to JSON file
+ * @param {string} filePath - Path to file
+ * @param {Object} data - Data to write
+ */
+function atomicWriteJSON(filePath, data) {
+    const fs = require('fs');
+    const tempPath = filePath + '.tmp';
+    fs.writeFileSync(tempPath, JSON.stringify(data, null, 2));
+    fs.renameSync(tempPath, filePath);
+}
+
 module.exports = {
     randomDelay,
     getDeviceScreenDimensions,
-    retryOperation
+    retryOperation,
+    clearPageData,
+    atomicWriteJSON
 };
