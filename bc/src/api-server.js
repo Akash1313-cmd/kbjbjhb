@@ -231,8 +231,26 @@ app.post('/api/scrape', requireAuthOrApiKey, scrapeLimiter, async (req, res) => 
 app.post('/api/scrape/single', requireAuthOrApiKey, scrapeLimiter, async (req, res) => {
     const { keyword, workers = 5 } = req.body;
     
+    // Validate keyword
     if (!keyword) {
-        return res.status(400).json({ error: 'Keyword required' });
+        return res.status(400).json({ 
+            success: false,
+            error: 'Keyword required' 
+        });
+    }
+    
+    if (typeof keyword !== 'string' || keyword.trim().length === 0) {
+        return res.status(400).json({ 
+            success: false,
+            error: 'Keyword must be a non-empty string' 
+        });
+    }
+    
+    if (keyword.length > 200) {
+        return res.status(400).json({ 
+            success: false,
+            error: 'Keyword must be less than 200 characters' 
+        });
     }
     
     const jobId = `job_${uuidv4()}`;
@@ -364,7 +382,7 @@ app.get('/api/jobs/my', requireAuth, async (req, res) => {
 });
 
 // Helper function to count places from local files for a given job
-const countPlacesFromLocalFiles = (job) => {
+const countPlacesFromLocalFiles = async (job) => {
     let count = 0;
     if (!job || !job.keywords || !Array.isArray(job.keywords)) {
         return 0;
@@ -376,16 +394,15 @@ const countPlacesFromLocalFiles = (job) => {
         const sanitized = keyword.replace(/[\\/*?:"<>|]/g, '').replace(/\s+/g, '_').substring(0, 50);
         const urlsFilePath = path.join(resultsDir, `${sanitized}_urls.json`);
         
-        if (fs.existsSync(urlsFilePath)) {
-            try {
-                const fileContent = fs.readFileSync(urlsFilePath, 'utf8');
-                const data = JSON.parse(fileContent);
-                if (Array.isArray(data)) {
-                    count += data.filter(item => item.status === 'SUCCESS').length;
-                }
-            } catch (e) {
-                logger.warn(`Could not read or parse file for counting: ${urlsFilePath}`, { error: e.message });
+        try {
+            await fs.promises.access(urlsFilePath);
+            const fileContent = await fs.promises.readFile(urlsFilePath, 'utf8');
+            const data = JSON.parse(fileContent);
+            if (Array.isArray(data)) {
+                count += data.filter(item => item.status === 'SUCCESS').length;
             }
+        } catch (e) {
+            // File doesn't exist or read error - silently skip
         }
     }
     return count;
@@ -420,12 +437,12 @@ app.get('/api/jobs', optionalAuth, async (req, res) => {
         ]);
 
         // Enrich jobs with the most accurate placesCount from local files
-        const enrichedJobs = dbJobs.map(job => {
+        const enrichedJobs = await Promise.all(dbJobs.map(async (job) => {
             let placesCount = 0;
             
             // For completed jobs, get the count from local files as requested by user
             if (job.status === 'completed') {
-                placesCount = countPlacesFromLocalFiles(job);
+                placesCount = await countPlacesFromLocalFiles(job);
             } else if (job.status === 'in_progress' && job.progress) {
                 // For in-progress jobs, the progress object is the most current source
                 placesCount = job.progress.placesScraped || 0;
@@ -442,7 +459,7 @@ app.get('/api/jobs', optionalAuth, async (req, res) => {
                         '0/0'
                 }
             };
-        });
+        }));
         
         res.json({
             jobs: enrichedJobs,
@@ -507,24 +524,28 @@ app.delete('/api/jobs/:id', requireAuth, async (req, res) => {
         if (saveLocalFiles && job.keywords && Array.isArray(job.keywords)) {
             const resultsDir = config.outputDir || path.join(__dirname, '..', 'results');
             
-            job.keywords.forEach(keyword => {
+            for (const keyword of job.keywords) {
                 try {
                     const sanitized = keyword.replace(/[\\/*?:"<>|]/g, '').replace(/\s+/g, '_').substring(0, 50);
                     const jsonFilePath = path.join(resultsDir, `${sanitized}.json`);
                     const tempFilePath = path.join(resultsDir, `${sanitized}.temp.json`);
                     
-                    if (fs.existsSync(jsonFilePath)) {
-                        fs.unlinkSync(jsonFilePath);
+                    try {
+                        await fs.promises.unlink(jsonFilePath);
                         filesDeleted++;
+                    } catch (err) {
+                        // File doesn't exist or already deleted
                     }
                     
-                    if (fs.existsSync(tempFilePath)) {
-                        fs.unlinkSync(tempFilePath);
+                    try {
+                        await fs.promises.unlink(tempFilePath);
+                    } catch (err) {
+                        // File doesn't exist or already deleted
                     }
                 } catch (err) {
                     logger.error(`Failed to delete file for keyword: ${keyword}`, { error: err.message });
                 }
-            });
+            }
         }
         
         // Delete job and its results from memory
@@ -945,18 +966,17 @@ app.get('/api/results/:jobId', optionalAuth, async (req, res) => {
                 let keywordData = [];
                 
                 // Check temp file first, then final file
-                if (fs.existsSync(tempFilePath)) {
+                try {
+                    await fs.promises.access(tempFilePath);
+                    const fileContent = await fs.promises.readFile(tempFilePath, 'utf8');
+                    keywordData = JSON.parse(fileContent);
+                    console.log(`   ✅ Loaded ${keywordData.length} places for "${keyword}" from temp file`);
+                } catch (tempErr) {
+                    // Temp file doesn't exist, try final file
                     try {
-                        keywordData = JSON.parse(fs.readFileSync(tempFilePath, 'utf8'));
-                        console.log(`   ✅ Loaded ${keywordData.length} places for "${keyword}" from temp file`);
-                    } catch (fileErr) {
-                        console.error(`   ❌ Failed to read temp file for "${keyword}": ${fileErr.message}`);
-                        keywordData = [];
-                    }
-                } else if (fs.existsSync(finalFilePath)) {
-                    try {
+                        await fs.promises.access(finalFilePath);
                         // Read file and fix common encoding issues
-                        let fileContent = fs.readFileSync(finalFilePath, 'utf8');
+                        let fileContent = await fs.promises.readFile(finalFilePath, 'utf8');
                         
                         // Fix common encoding issues
                         fileContent = fileContent.replace(/[\u0000-\u001F\u007F-\u009F]/g, ''); // Remove control characters
@@ -986,12 +1006,9 @@ app.get('/api/results/:jobId', optionalAuth, async (req, res) => {
                         }
                         
                         console.log(`   ✅ Loaded ${keywordData.length} places for "${keyword}" from final file`);
-                    } catch (fileErr) {
-                        console.error(`   ❌ Failed to read final file for "${keyword}": ${fileErr.message}`);
-                        keywordData = [];
+                    } catch (finalErr) {
+                        console.log(`   ⚠️ No file found for keyword: "${keyword}"`);
                     }
-                } else {
-                    console.log(`   ⚠️ No file found for keyword: "${keyword}"`);
                 }
                 
                 jobResults[keyword] = keywordData;
@@ -1392,15 +1409,14 @@ app.get('/api/stats', optionalAuth, async (req, res) => {
         }).length;
 
         // Always calculate total places by reading from local files for each job
-        const totalPlaces = userJobsArray.reduce((sum, job) => {
+        let totalPlaces = 0;
+        for (const job of userJobsArray) {
             if (job.status === 'completed') {
-                return sum + countPlacesFromLocalFiles(job);
+                totalPlaces += await countPlacesFromLocalFiles(job);
+            } else if (job.status === 'in_progress' && job.progress) {
+                totalPlaces += (job.progress.placesScraped || 0);
             }
-            if (job.status === 'in_progress' && job.progress) {
-                return sum + (job.progress.placesScraped || 0);
-            }
-            return sum;
-        }, 0);
+        }
 
         res.json({
             activeJobs: activeJobCount,
@@ -2497,23 +2513,23 @@ app.get('/api/performance/metrics', requireAuth, (req, res) => {
 const PORT = process.env.PORT || 3000;
 
 // Connect to MongoDB then start server
+// Global error handler middleware
+app.use((err, req, res, next) => {
+    console.error('Unhandled error:', err);
+    
+    res.status(err.statusCode || 500).json({
+        success: false,
+        error: process.env.NODE_ENV === 'production' 
+            ? 'Internal server error' 
+            : err.message,
+        details: process.env.NODE_ENV === 'production' ? null : err.stack
+    });
+});
+
 const startServer = async () => {
   try {
     // Connect to database
     await connectDB();
-    
-    // Initialize Production Manager for memory optimization
-    const productionManager = getProductionManager();
-    if (process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'development') {
-      productionManager.startMonitoring();
-      // console.log('✓ Production Manager: Active (Memory & Performance Monitoring)'); // Hidden
-      
-      // Start AGGRESSIVE memory cleaner for super fast performance
-      if (process.env.AGGRESSIVE_MEMORY_CLEAN === 'true') {
-        aggressiveCleaner.startCleaning();
-        // console.log('🔥 Aggressive Memory Cleaner: ACTIVATED (Nothing stays in memory!)'); // Hidden
-      }
-    }
     
     // Load recent jobs from MongoDB into memory
     await loadRecentJobsFromMongoDB();
@@ -2550,6 +2566,30 @@ Ready to accept requests!
     process.exit(1);
   }
 };
+
+// Graceful shutdown handlers
+process.on('SIGTERM', async () => {
+    console.log('SIGTERM received, shutting down gracefully...');
+    
+    server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+    });
+    
+    // Force close after 10 seconds
+    setTimeout(() => {
+        console.error('Forced shutdown');
+        process.exit(1);
+    }, 10000);
+});
+
+process.on('SIGINT', async () => {
+    console.log('SIGINT received, shutting down...');
+    server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+    });
+});
 
 // Start the server
 startServer();
