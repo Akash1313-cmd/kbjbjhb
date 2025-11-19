@@ -5,6 +5,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const CONSTANTS = require('../../utils/constants');
 const logger = require('../../utils/logger');
 const { CONFIG, BROWSER_CONFIG } = require('../config/config-loader');
 const { launchChromium } = require('../browser/launcher');
@@ -14,7 +15,7 @@ const { setupRequestInterception } = require('../middleware/request-interceptor'
 const { extractPlaceLinks, extractPlaceLinksStreaming } = require('./link-extractor');
 const { scrapePlace, scrapePlaceInTab } = require('./data-scraper');
 const { saveToJSON } = require('../utils/file-operations');
-const { retryOperation } = require('../utils/helpers');
+const { retryOperation, clearPageData, atomicWriteJSON } = require('../utils/helpers');
 const { captchaDetector } = require('../utils/captcha-detector');
 
 // Global state for all results (used by API)

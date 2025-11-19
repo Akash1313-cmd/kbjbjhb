@@ -116,6 +116,29 @@ const logger = {
         } else {
             winstonLogger.transports.forEach(t => t.silent = false);
         }
+    },
+    
+    // Additional custom methods
+    header: (text) => {
+        const line = '='.repeat(50);
+        console.log(chalk.bold.cyan(`\n${line}\n${text}\n${line}\n`));
+    },
+    
+    separator: () => {
+        console.log(chalk.gray('─'.repeat(50)));
+    },
+    
+    warning: (text) => {
+        console.log(chalk.yellow(`⚠ ${text}`));
+        winstonLogger.warn(text);
+    },
+    
+    highlight: (text) => {
+        console.log(chalk.bold.yellow(text));
+    },
+    
+    dim: (text) => {
+        console.log(chalk.dim(text));
     }
 };
 

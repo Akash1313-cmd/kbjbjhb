@@ -45,6 +45,7 @@ module.exports = {
     XPATH_PRICE_RANGE: '//*[@id="QA0Szd"]/div/div/div[1]/div[2]/div/div[1]/div/div/div[1]/div[2]/div[1]/div/div[2]/div/div[2]',
     XPATH_SCROLLER_1: '//*[@id="QA0Szd"]/div/div/div[1]/div[2]/div/div[1]/div/div/div[2]/div[1]',
     XPATH_SCROLLER_2: '//*[@id="QA0Szd"]/div/div/div[1]/div[2]/div/div[1]/div/div/div[1]/div[1]',
+    MAX_SCROLL_ATTEMPTS: 100,
     
     // Config validation
     ALLOWED_CONFIG_KEYS: [
